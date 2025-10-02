@@ -1,4 +1,6 @@
 #include "Server.hpp"
+#include <fcntl.h> // ノンブロッキング用
+#include <cerrno>
 
 Server::Server(int port) : serverFd(-1), nfds(1), port(port) {}
 
@@ -15,6 +17,7 @@ bool Server::init() {
         perror("socket");
         return false;
     }
+
     // 再起動時にbindエラーを防ぐ
     int opt = 1;
     if (setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR,
@@ -22,6 +25,18 @@ bool Server::init() {
         perror("setsockopt");
         return false;
     }
+
+    // ノンブロッキング設定 (1️⃣ listenソケット)
+    int flags = fcntl(serverFd, F_GETFL, 0);
+    if (flags == -1) {
+        perror("fcntl get");
+        return false;
+    }
+    if (fcntl(serverFd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        perror("fcntl set O_NONBLOCK");
+        return false;
+    }
+
     // アドレス設定
     sockaddr_in addr;
     addr.sin_family = AF_INET;
@@ -37,6 +52,7 @@ bool Server::init() {
         perror("listen");
         return false;
     }
+
     // listenソケットをpoll配列に登録
     fds[0].fd = serverFd;
     fds[0].events = POLLIN;
@@ -57,6 +73,7 @@ void Server::run() {
         if (fds[0].revents & POLLIN) { // 新規接続あり
             handleNewConnection();
         }
+
         // 既存クライアントの処理
         for (int i = 1; i < nfds; i++) {
             if (fds[i].revents & POLLIN) {
@@ -75,6 +92,18 @@ void Server::handleNewConnection() {
         printf("Max clients reached, rejecting: fd=%d\n", clientFd);
         close(clientFd);
     } else {
+        // 1️⃣ 新しいクライアントソケットもノンブロッキングに設定
+        int flags = fcntl(clientFd, F_GETFL, 0);
+        if (flags == -1) {
+            perror("fcntl get client");
+            close(clientFd);
+            return;
+        }
+        else if (fcntl(clientFd, F_SETFL, flags | O_NONBLOCK) == -1){
+            perror("fcntl set O_NONBLOCK client");
+            close(clientFd);
+            return;
+        }
         fds[nfds].fd = clientFd;
         fds[nfds].events = POLLIN;
         nfds++;
@@ -87,21 +116,25 @@ void Server::handleClient(int index) {
     char buffer[1024];
     int bytes = recv(fds[index].fd, buffer, sizeof(buffer)-1, 0);
 
-    if (bytes <= 0) { // 切断判定
+    if (bytes == 0) { 
+        // クライアント切断
         close(fds[index].fd);
         printf("Client disconnected: fd=%d\n", fds[index].fd);
-        fds[index] = fds[nfds-1]; // 配列詰め
+        fds[index] = fds[nfds-1];
         nfds--;
-    } else {
-        buffer[bytes] = '\0';
-        printf("Received from fd=%d: %s\n", fds[index].fd, buffer);
-
-        int sent = send(fds[index].fd, buffer, bytes, 0); // エコー送信
-        if (sent < 0) {
-            perror("send");
+    } else if (bytes < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            // データなし: 無視して次のpollへ
+            return;
+        } else {
+            perror("recv");
             close(fds[index].fd);
             fds[index] = fds[nfds-1];
             nfds--;
         }
+    } else {
+        buffer[bytes] = '\0';
+        printf("Received from fd=%d: %s\n", fds[index].fd, buffer);
+        send(fds[index].fd, buffer, bytes, 0);
     }
 }
