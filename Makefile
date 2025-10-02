@@ -1,8 +1,17 @@
 NAME = webserv
-SRC = src/main.cpp
+
+# ソースとヘッダの場所
+SRC_DIR = src
+INC_DIR = include
+
+# ソース一覧（今後 cpp を追加すればここに並べる）
+SRC = $(SRC_DIR)/main.cpp \
+      $(SRC_DIR)/Server.cpp \
+
 OBJ = $(SRC:.cpp=.o)
+
 CXX = g++
-CXXFLAGS = -Wall -Wextra -Werror -std=c++98
+CXXFLAGS = -Wall -Wextra -Werror -std=c++98 -I$(INC_DIR)
 
 all: $(NAME)
 
