@@ -8,6 +8,7 @@ Server::~Server() {
     for (int i = 0; i < nfds; i++) {
         close(fds[i].fd);
     }
+    clients.clear(); // ★ Day17-18追加
 }
 
 // サーバー初期化
@@ -107,6 +108,10 @@ void Server::handleNewConnection() {
         fds[nfds].fd = clientFd;
         fds[nfds].events = POLLIN;
         nfds++;
+
+        // ★ Day17-18追加: 新しいクライアント用の受信バッファを初期化
+        clients[clientFd] = ClientInfo();
+
         printf("New client connected: fd=%d\n", clientFd);
     }
 }
@@ -114,27 +119,52 @@ void Server::handleNewConnection() {
 // クライアント受信・送信処理
 void Server::handleClient(int index) {
     char buffer[1024];
-    int bytes = recv(fds[index].fd, buffer, sizeof(buffer)-1, 0);
+    int fd = fds[index].fd; // ★ Day17-18追加: fdを変数化
+    int bytes = recv(fd, buffer, sizeof(buffer)-1, 0);
 
     if (bytes == 0) { 
         // クライアント切断
-        close(fds[index].fd);
-        printf("Client disconnected: fd=%d\n", fds[index].fd);
+        close(fd);
+        printf("Client disconnected: fd=%d\n", fd);
         fds[index] = fds[nfds-1];
         nfds--;
+
+        // ★ Day17-18追加: バッファ削除
+        clients.erase(fd);
+
     } else if (bytes < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             // データなし: 無視して次のpollへ
             return;
         } else {
             perror("recv");
-            close(fds[index].fd);
+            close(fd);
             fds[index] = fds[nfds-1];
             nfds--;
+
+            // ★ Day17-18追加: バッファ削除
+            clients.erase(fd);
         }
     } else {
         buffer[bytes] = '\0';
-        printf("Received from fd=%d: %s\n", fds[index].fd, buffer);
-        send(fds[index].fd, buffer, bytes, 0);
+
+        // ★ Day17-18追加: 受信データをクライアントバッファに追加
+        clients[fd].recvBuffer.append(buffer);
+
+        // ★ Day17-18追加: リクエスト終端（\r\n\r\n）を検出
+        if (clients[fd].recvBuffer.find("\r\n\r\n") != std::string::npos) {
+            clients[fd].requestComplete = true;
+
+            // ★ Day17-18追加: Bさんに渡す想定の処理
+            printf("Request complete from fd=%d:\n%s\n",
+                   fd, clients[fd].recvBuffer.c_str());
+
+            // Bさんの解析関数を呼ぶイメージ
+            // parseRequest(clients[fd].recvBuffer);
+
+            // 処理後にバッファをクリア
+            clients[fd].recvBuffer.clear();
+            clients[fd].requestComplete = false;
+        }
     }
 }
