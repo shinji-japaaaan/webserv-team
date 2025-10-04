@@ -8,15 +8,18 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
-#include <map>     // ★ Day17-18追加: クライアントごとのバッファ管理に使用
+#include <map>
 #include <string>
+#include <fcntl.h>
+#include <cerrno>
 
 #define MAX_CLIENTS 100
 
-// ★ Day17-18追加: クライアント情報構造体
+// クライアント情報構造体
 struct ClientInfo {
-    std::string recvBuffer;   // 受信バッファ
-    bool requestComplete;     // リクエスト受信完了フラグ
+    std::string recvBuffer;    // 受信バッファ
+    std::string sendBuffer;    // ★ Day19-20追加: 送信バッファ
+    bool requestComplete;      // リクエスト受信完了フラグ
 };
 
 // サーバー全体を管理するクラス
@@ -27,19 +30,21 @@ private:
     int nfds;                 // fdsの有効数
     int port;                 // 待ち受けポート番号
 
-public:
-    Server(int port);   // コンストラクタ（ポート番号設定）
-    ~Server();          // デストラクタ（全ソケットを閉じる）
+    std::map<int, ClientInfo> clients; // fd -> ClientInfo 対応表
 
-    bool init();        // サーバー初期化（socket/bind/listen）
-    void run();         // クライアント接続ループ
+public:
+    Server(int port);
+    ~Server();
+
+    bool init();
+    void run();
 
 private:
-    void handleNewConnection(); // 新規クライアント接続処理
-    void handleClient(int index); // クライアント受信・送信処理
+    void handleNewConnection();
+    void handleClient(int index);
 
-    // ★ Day17-18追加: fd -> ClientInfo の対応表
-    std::map<int, ClientInfo> clients;
+    // ★ Day19-20追加: クライアントに送信するデータをバッファに積む
+    void queueSend(int fd, const std::string &data);
 };
 
 #endif
