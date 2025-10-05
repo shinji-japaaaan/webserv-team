@@ -13,39 +13,61 @@
 #include <fcntl.h>
 #include <cerrno>
 
-#define MAX_CLIENTS 100
+#include "ClientInfo.hpp"
 
-// クライアント情報構造体
-struct ClientInfo {
-    std::string recvBuffer;    // 受信バッファ
-    std::string sendBuffer;    // ★ Day19-20追加: 送信バッファ
-    bool requestComplete;      // リクエスト受信完了フラグ
-};
+#define MAX_CLIENTS 100
 
 // サーバー全体を管理するクラス
 class Server {
 private:
-    int serverFd;             // listen用ソケット
-    pollfd fds[MAX_CLIENTS];  // クライアントFD監視配列
-    int nfds;                 // fdsの有効数
-    int port;                 // 待ち受けポート番号
+    // -----------------------------
+    // メンバ変数
+    // -----------------------------
+    int serverFd;                 // listen用ソケット
+    pollfd fds[MAX_CLIENTS];      // クライアントFD監視配列
+    int nfds;                     // fdsの有効数
+    int port;                     // 待ち受けポート番号
 
     std::map<int, ClientInfo> clients; // fd -> ClientInfo 対応表
+
+    // -----------------------------
+    // 初期化系
+    // -----------------------------
+    bool createSocket();
+    bool bindAndListen();
+
+    // -----------------------------
+    // 接続処理
+    // -----------------------------
     void handleNewConnection();
-    void handleClient(int index);
-    // ★ Day19-20追加: クライアントに送信するデータをバッファに積む
-    void queueSend(int fd, const std::string &data);
-    std::string extractNextRequest(std::string &recvBuffer);
+    int acceptClient();                  // accept + nonblocking設定
     void handleDisconnect(int fd, int index, int bytes);
+    void handleConnectionClose(int fd);
+
+    // -----------------------------
+    // クライアント受信処理
+    // -----------------------------
+    void handleClient(int index);
+    std::string extractNextRequest(std::string &recvBuffer);
+
+    // -----------------------------
+    // クライアント送信処理
+    // -----------------------------
+    void handleClientSend(int index);
+    void queueSend(int fd, const std::string &data);
 
 public:
+    // -----------------------------
+    // コンストラクタ / デストラクタ
+    // -----------------------------
     Server(int port);
     ~Server();
 
+    // -----------------------------
+    // 初期化 / メインループ
+    // -----------------------------
     bool init();
     void run();
-
 };
-    
 
 #endif

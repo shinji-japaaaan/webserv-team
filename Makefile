@@ -7,7 +7,6 @@ INC_DIR = include
 # ソース一覧（今後 cpp を追加すればここに並べる）
 SRC = $(SRC_DIR)/main.cpp \
       $(SRC_DIR)/Server.cpp \
-	  $(SRC_DIR)/connection_utils.cpp
 
 
 OBJ = $(SRC:.cpp=.o)
