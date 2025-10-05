@@ -31,6 +31,12 @@ private:
     int port;                 // 待ち受けポート番号
 
     std::map<int, ClientInfo> clients; // fd -> ClientInfo 対応表
+    void handleNewConnection();
+    void handleClient(int index);
+    // ★ Day19-20追加: クライアントに送信するデータをバッファに積む
+    void queueSend(int fd, const std::string &data);
+    std::string extractNextRequest(std::string &recvBuffer);
+    void handleDisconnect(int fd, int index, int bytes);
 
 public:
     Server(int port);
@@ -39,12 +45,7 @@ public:
     bool init();
     void run();
 
-private:
-    void handleNewConnection();
-    void handleClient(int index);
-
-    // ★ Day19-20追加: クライアントに送信するデータをバッファに積む
-    void queueSend(int fd, const std::string &data);
 };
+    
 
 #endif

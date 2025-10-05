@@ -1,4 +1,5 @@
 #include "Server.hpp"
+#include "connection_utils.hpp"
 
 Server::Server(int port) : serverFd(-1), nfds(1), port(port) {}
 
@@ -83,6 +84,8 @@ void Server::run() {
                         client.sendBuffer.erase(0, n);
                         if (client.sendBuffer.empty()) {
                             fds[i].events &= ~POLLOUT; // 送信完了 → POLLOUT 無効化
+                            handleConnectionClose(fd, clients, fds, nfds);
+                            continue;
                         }
                     } else if (n == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
                         perror("write");
@@ -131,39 +134,69 @@ void Server::handleNewConnection() {
 void Server::handleClient(int index) {
     char buffer[1024];
     int fd = fds[index].fd;
-    int bytes = recv(fd, buffer, sizeof(buffer)-1, 0);
+    int bytes = recv(fd, buffer, sizeof(buffer) - 1, 0);
 
-    if (bytes == 0) {
-        close(fd);
-        printf("Client disconnected: fd=%d\n", fd);
-        fds[index] = fds[nfds-1];
-        nfds--;
-        clients.erase(fd);
-    } else if (bytes < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) return;
-        perror("recv");
-        close(fd);
-        fds[index] = fds[nfds-1];
-        nfds--;
-        clients.erase(fd);
+    if (bytes <= 0) {
+        handleDisconnect(fd, index, bytes);
+        return;
     } else {
+        // --- ここから受信データの処理 ---
         buffer[bytes] = '\0';
         clients[fd].recvBuffer.append(buffer);
 
-        if (clients[fd].recvBuffer.find("\r\n\r\n") != std::string::npos) {
-            clients[fd].requestComplete = true;
+        // ★ 複数リクエスト対応ループ
+        while (true) {
+            std::string request = extractNextRequest(clients[fd].recvBuffer);
+            if (request.empty()) break;  // 次のリクエストが未到達なら抜ける
+
+            // 仮置き：Bさんのパーサーに渡す
+            // parseRequest(request);
 
             printf("Request complete from fd=%d:\n%s\n",
-                   fd, clients[fd].recvBuffer.c_str());
+                fd, request.c_str());
 
-            
+            // ★ テスト用HTTPレスポンス
+            std::string response =
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/plain\r\n"
+                "Content-Length: 12\r\n"
+                "Connection: keep-alive\r\n"
+                "\r\n"
+                "Hello World\n";
 
-            // parseRequest(clients[fd].recvBuffer); // Bさん用
+            queueSend(fd, response); // 送信キューに入れる
 
-            clients[fd].recvBuffer.clear();
-            clients[fd].requestComplete = false;
+            // 処理済みリクエスト部分をバッファから削除
+            clients[fd].recvBuffer.erase(0, request.size());
         }
     }
+}
+
+// 接続切断処理をまとめる 
+void Server::handleDisconnect(int fd, int index, int bytes) {
+     if (bytes == 0) {
+        printf("Client disconnected: fd=%d\n", fd);
+    } else if (bytes < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            return;
+        perror("recv");
+    } else {
+        // bytes > 0 の場合はここに来ない（保険）
+        return;
+    }
+    close(fd);
+    fds[index] = fds[nfds - 1]; // 配列の詰め替え
+    nfds--;
+    clients.erase(fd);
+}
+
+std::string Server::extractNextRequest(std::string &recvBuffer) {
+    size_t pos = recvBuffer.find("\r\n\r\n"); // ヘッダ終端判定
+    if (pos == std::string::npos) {
+        return ""; // ヘッダがまだ揃っていない → 何も返さない
+    }
+    // 仮でヘッダまでを1リクエストとして返す
+    return recvBuffer.substr(0, pos + 4);
 }
 
 // ★ Day19-20修正版: C++98対応（auto禁止）
