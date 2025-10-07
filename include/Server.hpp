@@ -12,6 +12,7 @@
 #include <string>
 #include <fcntl.h>
 #include <cerrno>
+#include <vector>
 
 #include "ClientInfo.hpp"
 
@@ -56,6 +57,8 @@ private:
     void handleClientSend(int index);
     void queueSend(int fd, const std::string &data);
 
+    int findIndexByFd(int fd);
+
 public:
     // -----------------------------
     // コンストラクタ / デストラクタ
@@ -68,6 +71,12 @@ public:
     // -----------------------------
     bool init();
     void run();
+
+    int getServerFd() const;
+    std::vector<int> getClientFds() const;  
+
+    // ServerManager から呼ばれる安全な公開インターフェース
+    void onPollEvent(int fd, short revents);
 };
 
 #endif

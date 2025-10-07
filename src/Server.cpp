@@ -1,4 +1,6 @@
 #include "Server.hpp"
+#include "log.hpp" // ★追加：ログ機能を使用
+#include <sstream> 
 
 // ----------------------------
 // コンストラクタ・デストラクタ
@@ -38,6 +40,8 @@ bool Server::init() {
 bool Server::createSocket() {
     serverFd = socket(AF_INET, SOCK_STREAM, 0);
     if (serverFd < 0) {
+        // ★追加：異常時ログ出力
+        logMessage(ERROR, std::string("socket() failed: ") + strerror(errno));
         perror("socket");
         return false;
     }
@@ -45,17 +49,23 @@ bool Server::createSocket() {
     int opt = 1;
     if (setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR,
                    &opt, sizeof(opt)) < 0) {
+        // ★追加：異常時ログ出力
+        logMessage(ERROR, std::string("setsockopt() failed: ") + strerror(errno));
         perror("setsockopt");
         return false;
     }
 
     int flags = fcntl(serverFd, F_GETFL, 0);
     if (flags == -1) {
+        // ★追加：異常時ログ出力
+        logMessage(ERROR, std::string("fcntl(F_GETFL) failed: ") + strerror(errno));
         perror("fcntl get");
         return false;
     }
 
     if (fcntl(serverFd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        // ★追加：異常時ログ出力
+        logMessage(ERROR, std::string("fcntl(O_NONBLOCK) failed: ") + strerror(errno));
         perror("fcntl set O_NONBLOCK");
         return false;
     }
@@ -71,11 +81,15 @@ bool Server::bindAndListen() {
     addr.sin_port = htons(port);
 
     if (bind(serverFd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        // ★追加：異常時ログ出力
+        logMessage(ERROR, std::string("bind() failed: ") + strerror(errno));
         perror("bind");
         return false;
     }
 
     if (listen(serverFd, 5) < 0) {
+        // ★追加：異常時ログ出力
+        logMessage(ERROR, std::string("listen() failed: ") + strerror(errno));
         perror("listen");
         return false;
     }
@@ -92,6 +106,8 @@ void Server::run() {
     while (true) {
         int ret = poll(fds, nfds, -1);
         if (ret < 0) {
+            // ★追加：異常時ログ出力
+            logMessage(ERROR, std::string("poll() failed: ") + strerror(errno));
             perror("poll");
             break;
         }
@@ -123,17 +139,19 @@ void Server::handleNewConnection() {
     if (clientFd < 0) return; // accept 失敗時は何もしない
 
     if (nfds >= MAX_CLIENTS) {
-        printf("Max clients reached, rejecting: fd=%d\n", clientFd);
+         // ★追加：異常時ログ出力
+        std::ostringstream oss;
+        oss << "Max clients reached, rejecting fd=" << clientFd;
+        logMessage(WARNING, oss.str());
         close(clientFd);
         return;
     }
 
-    // fds 配列と clients を初期化
     fds[nfds].fd = clientFd;
     fds[nfds].events = POLLIN;
     nfds++;
 
-    clients[clientFd] = ClientInfo(); // 送受信バッファ初期化
+    clients[clientFd] = ClientInfo();
 
     printf("New client connected: fd=%d\n", clientFd);
 }
@@ -142,18 +160,23 @@ void Server::handleNewConnection() {
 int Server::acceptClient() {
     int clientFd = accept(serverFd, NULL, NULL);
     if (clientFd < 0) {
+        // ★追加：異常時ログ出力
+        logMessage(ERROR, std::string("accept() failed: ") + strerror(errno));
         perror("accept");
         return -1;
     }
 
-    // ノンブロッキング設定
     int flags = fcntl(clientFd, F_GETFL, 0);
     if (flags == -1) {
+        // ★追加：異常時ログ出力
+        logMessage(ERROR, std::string("fcntl(F_GETFL client) failed: ") + strerror(errno));
         perror("fcntl get client");
         close(clientFd);
         return -1;
     }
     if (fcntl(clientFd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        // ★追加：異常時ログ出力
+        logMessage(ERROR, std::string("fcntl(O_NONBLOCK client) failed: ") + strerror(errno));
         perror("fcntl set O_NONBLOCK client");
         close(clientFd);
         return -1;
@@ -166,7 +189,6 @@ int Server::acceptClient() {
 // クライアント受信処理
 // ----------------------------
 
-// クライアントからの受信データ処理
 void Server::handleClient(int index) {
     char buffer[1024];
     int fd = fds[index].fd;
@@ -176,22 +198,16 @@ void Server::handleClient(int index) {
         handleDisconnect(fd, index, bytes);
         return;
     } else {
-        // --- ここから受信データの処理 ---
         buffer[bytes] = '\0';
         clients[fd].recvBuffer.append(buffer);
 
-        // ★ 複数リクエスト対応ループ
         while (true) {
             std::string request = extractNextRequest(clients[fd].recvBuffer);
-            if (request.empty()) break;  // 次のリクエストが未到達なら抜ける
-
-            // 仮置き：Bさんのパーサーに渡す
-            // parseRequest(request);
+            if (request.empty()) break;
 
             printf("Request complete from fd=%d:\n%s\n",
                 fd, request.c_str());
 
-            // ★ テスト用HTTPレスポンス
             std::string response =
                 "HTTP/1.1 200 OK\r\n"
                 "Content-Type: text/plain\r\n"
@@ -200,9 +216,7 @@ void Server::handleClient(int index) {
                 "\r\n"
                 "Hello World\n";
 
-            queueSend(fd, response); // 送信キューに入れる
-
-            // 処理済みリクエスト部分をバッファから削除
+            queueSend(fd, response);
             clients[fd].recvBuffer.erase(0, request.size());
         }
     }
@@ -228,6 +242,8 @@ void Server::handleClientSend(int index) {
                 handleConnectionClose(fd);
             }
         } else if (n == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            // --- 修正箇所: 異常時ログ出力追加 ---
+            logError("write", strerror(errno));
             perror("write");
             close(fd);
             fds[index] = fds[nfds-1];
@@ -297,12 +313,15 @@ void Server::handleConnectionClose(int fd)
 
 // 接続切断処理（recv エラーや切断時の処理）
 void Server::handleDisconnect(int fd, int index, int bytes) {
-     if (bytes == 0) {
-        printf("Client disconnected: fd=%d\n", fd);
+    if (bytes == 0) {
+        std::stringstream ss;
+        ss << fd;
+        logMessage(INFO, "Client disconnected: fd=" + ss.str());
     } else if (bytes < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK)
             return;
-        perror("recv");
+        // --- 修正箇所: 異常時ログ出力追加 ---
+        logError("recv", strerror(errno));
     } else {
         // bytes > 0 の場合はここに来ない（保険）
         return;
@@ -326,3 +345,47 @@ std::string Server::extractNextRequest(std::string &recvBuffer) {
     // 仮でヘッダまでを1リクエストとして返す
     return recvBuffer.substr(0, pos + 4);
 }
+
+// std::string Server::extractNextRequest(std::string &recvBuffer) {
+//     RequestParser parser;
+//     if (!parser.isRequestComplete(recvBuffer)) return "";
+
+//     Request req = parser.parse(recvBuffer);
+//     clients[fd].currentRequest = req;
+//     return recvBuffer.substr(0, parser.getParsedLength());
+// }
+
+int Server::getServerFd() const { 
+    return serverFd; 
+}
+
+std::vector<int> Server::getClientFds() const {
+    std::vector<int> fds;
+    for (std::map<int, ClientInfo>::const_iterator it = clients.begin();
+         it != clients.end(); ++it) {
+        fds.push_back(it->first);
+    }
+    return fds;
+}
+
+void Server::onPollEvent(int fd, short revents) {
+    if (fd == serverFd && (revents & POLLIN)) {
+        handleNewConnection();
+    } else {
+        if (revents & POLLIN)
+            handleClient(findIndexByFd(fd));
+        if (revents & POLLOUT)
+            handleClientSend(findIndexByFd(fd));
+    }
+}
+
+// fdからindexを見つける補助関数
+int Server::findIndexByFd(int fd) {
+    for (int i = 0; i < nfds; ++i) {
+        if (fds[i].fd == fd)
+            return i;
+    }
+    return -1;
+}
+
+

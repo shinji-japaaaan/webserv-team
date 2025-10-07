@@ -1,10 +1,13 @@
-#include "Server.hpp"
+#include "ServerManager.hpp"
 
 int main() {
-    Server server(8080);   // 8080ポートでサーバー作成
+    ServerManager manager;
 
-    if (!server.init()) return 1; // 初期化失敗時は終了
+    if (!manager.loadConfig("../conf/config.conf"))
+        return 1;
+    if (!manager.initAllServers())
+        return 1;
 
-    server.run(); // クライアント接続開始
+    manager.runAllServers();
     return 0;
 }
