@@ -7,6 +7,12 @@
 
 //HTTPレスポンスを生成しているコードたち
 
+// 追加：仕様名に合わせたラッパー
+std::string ResponseBuilder::generateResponse(const Request& req) {
+    // TODO: BのConfig/Routeが入ったら docRoot/index を外から渡す設計に差し替え
+    return build(req, "./www", "index.html");
+}
+
 //パスがフォルダか・ファイルかを確認するヘルパー
 static bool isDir_(const std::string& p){
     struct stat st; if (stat(p.c_str(), &st) != 0) return false;
@@ -70,10 +76,23 @@ std::string ResponseBuilder::build(const Request& req,
                                    const std::string& docRoot,
                                    const std::string& indexName)
 {
-    // 1) メソッド制限（今はGET/HEADのみ）
-    if (req.method != "GET" && req.method != "HEAD") {
-        return buildError_(405, "Method Not Allowed", true);
-    }
+	// 1) メソッド制限（今はGET/HEADのみ）
+	if (req.method != "GET" && req.method != "HEAD") {
+		// 405専用のレスポンス（Allowヘッダ付き）
+		std::string body =
+			"<!doctype html><title>Method Not Allowed</title>"
+			"<h1>Method Not Allowed</h1>";
+		std::ostringstream res;
+		res << "HTTP/1.1 405 Method Not Allowed\r\n"
+			<< "Content-Type: text/html\r\n"
+			<< "Allow: GET, HEAD\r\n"   // ← ここを追加！
+			<< "Content-Length: " << body.size() << "\r\n"
+			<< "Connection: close\r\n"
+			<< "Date: " << httpDate_() << "\r\n"
+			<< "Server: webserv/0.1\r\n\r\n"
+			<< body;
+		return res.str();
+	}
 
     // 2) パス結合＆index解決
     std::string uri = req.uri.empty() ? "/" : req.uri;

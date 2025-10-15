@@ -1,7 +1,7 @@
 #include "Server.hpp"
 #include "log.hpp" // ★追加：ログ機能を使用
-#include "resp/ResponseBuilder.hpp"
-#include "http/Request.hpp"   // Cパートの暫定Request
+#include "RequestParser.hpp"
+#include "resp/ResponseBuilder.hpp" 
 #include <sstream> 
 
 // ----------------------------
@@ -205,52 +205,23 @@ void Server::handleClient(int index) {
           buffer); // ここにbufferに入った文字列が入っている。
       std::cout << "元の文字列:\n" << clients[fd].recvBuffer << std::endl;
 
-      while (true) {
-        std::string request = extractNextRequest(clients[fd].recvBuffer,
-                                                 clients[fd].currentRequest);
-        if (request.empty())
-          break;
-        printRequest(
-            clients[fd]
-                .currentRequest); // Requestパースのテスト用に出力,
-                                  // currentRequestにパースした文字列が格納されている。
+		while (true) {
+			std::string request =
+				extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
+			if (request.empty()) break;
 
-            printf("Request complete from fd=%d:\n%s\n",
-                fd, request.c_str());
+			printRequest(clients[fd].currentRequest);
+			printf("Request complete from fd=%d:\n%s\n", fd, request.c_str());
 
-			// ---- ResponseBuilder を呼ぶ（暫定パース版） ----
-			// リクエストの1行目だけパース（例: "GET / HTTP/1.1"）
-			std::string firstLine;
-			{
-				std::string::size_type eol = request.find("\r\n");
-				firstLine = (eol == std::string::npos) ? request : request.substr(0, eol);
-			}
-			std::string method = "GET", uri = "/", version = "HTTP/1.1";
-			{
-				std::istringstream iss(firstLine);
-				iss >> method >> uri >> version;
-			}
-
-			// 暫定 Request に詰める
-			Request req;
-			req.method = method;
-			req.uri = uri;
-			req.version = version;
-			// まずは close 運用（Server 側も close なので矛盾しない）
-			req.connectionClose = true;
-
+			// ---- ResponseBuilder を呼ぶ（ラッパー版）----
 			ResponseBuilder rb;
-			// 仮のドキュメントルートと index 名（Config出来たら差し替え）
-			const std::string docRoot = "./www";
-			const std::string index   = "index.html";
-
-			std::string response = rb.build(req, docRoot, index);
+			std::string response = rb.generateResponse(clients[fd].currentRequest);
 			queueSend(fd, response);
-			// ---- ここまで ----
+			// ---------------------------------------------
 
-			// 受信バッファから今回のリクエストぶんを削る
+			// このリクエスト分を削る（※二重eraseしない）
 			clients[fd].recvBuffer.erase(0, request.size());
-        }
+		}
     }
 }
 
