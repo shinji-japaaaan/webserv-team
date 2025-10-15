@@ -1,5 +1,7 @@
 #include "Server.hpp"
 #include "log.hpp" // ★追加：ログ機能を使用
+#include "RequestParser.hpp"
+#include "resp/ResponseBuilder.hpp" 
 #include <sstream> 
 
 // ----------------------------
@@ -198,27 +200,28 @@ void Server::handleClient(int index) {
         handleDisconnect(fd, index, bytes);
         return;
     } else {
-        buffer[bytes] = '\0';
-        clients[fd].recvBuffer.append(buffer);
+      buffer[bytes] = '\0';
+      clients[fd].recvBuffer.append(
+          buffer); // ここにbufferに入った文字列が入っている。
+      std::cout << "元の文字列:\n" << clients[fd].recvBuffer << std::endl;
 
-        while (true) {
-            std::string request = extractNextRequest(clients[fd].recvBuffer);
-            if (request.empty()) break;
+		while (true) {
+			std::string request =
+				extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
+			if (request.empty()) break;
 
-            printf("Request complete from fd=%d:\n%s\n",
-                fd, request.c_str());
+			printRequest(clients[fd].currentRequest);
+			printf("Request complete from fd=%d:\n%s\n", fd, request.c_str());
 
-            std::string response =
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: text/plain\r\n"
-                "Content-Length: 12\r\n"
-                "Connection: keep-alive\r\n"
-                "\r\n"
-                "Hello World\n";
+			// ---- ResponseBuilder を呼ぶ（ラッパー版）----
+			ResponseBuilder rb;
+			std::string response = rb.generateResponse(clients[fd].currentRequest);
+			queueSend(fd, response);
+			// ---------------------------------------------
 
-            queueSend(fd, response);
-            clients[fd].recvBuffer.erase(0, request.size());
-        }
+			// このリクエスト分を削る（※二重eraseしない）
+			clients[fd].recvBuffer.erase(0, request.size());
+		}
     }
 }
 
@@ -337,26 +340,27 @@ void Server::handleDisconnect(int fd, int index, int bytes) {
 // ----------------------------
 
 // 次のリクエストを受信バッファから抽出
-std::string Server::extractNextRequest(std::string &recvBuffer) {
-    size_t pos = recvBuffer.find("\r\n\r\n"); // ヘッダ終端判定
-    if (pos == std::string::npos) {
-        return ""; // ヘッダがまだ揃っていない → 何も返さない
-    }
-    // 仮でヘッダまでを1リクエストとして返す
-    return recvBuffer.substr(0, pos + 4);
-}
-
 // std::string Server::extractNextRequest(std::string &recvBuffer) {
-//     RequestParser parser;
-//     if (!parser.isRequestComplete(recvBuffer)) return "";
-
-//     Request req = parser.parse(recvBuffer);
-//     clients[fd].currentRequest = req;
-//     return recvBuffer.substr(0, parser.getParsedLength());
+//     size_t pos = recvBuffer.find("\r\n\r\n"); // ヘッダ終端判定
+//     if (pos == std::string::npos) {
+//         return ""; // ヘッダがまだ揃っていない → 何も返さない
+//     }
+//     // 仮でヘッダまでを1リクエストとして返す
+//     return recvBuffer.substr(0, pos + 4);
 // }
 
-int Server::getServerFd() const { 
-    return serverFd; 
+std::string Server::extractNextRequest(std::string &recvBuffer,
+                                       Request &currentRequest) {
+  RequestParser parser;
+  if (!parser.isRequestComplete(recvBuffer))
+    return "";
+
+  currentRequest = parser.parse(recvBuffer);
+  return recvBuffer.substr(0, parser.getParsedLength());
+}
+
+int Server::getServerFd() const {
+    return serverFd;
 }
 
 std::vector<int> Server::getClientFds() const {
