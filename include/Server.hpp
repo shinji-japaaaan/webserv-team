@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "ClientInfo.hpp"
+#include "RequestParser.hpp"
 
 #define MAX_CLIENTS 100
 
@@ -49,7 +50,7 @@ private:
     // クライアント受信処理
     // -----------------------------
     void handleClient(int index);
-    std::string extractNextRequest(std::string &recvBuffer);
+    std::string extractNextRequest(std::string &recvBuffer, Request &currentRequest);
 
     // -----------------------------
     // クライアント送信処理
@@ -73,7 +74,7 @@ public:
     void run();
 
     int getServerFd() const;
-    std::vector<int> getClientFds() const;  
+    std::vector<int> getClientFds() const;
 
     // ServerManager から呼ばれる安全な公開インターフェース
     void onPollEvent(int fd, short revents);
