@@ -1,5 +1,7 @@
 #include "Server.hpp"
 #include "log.hpp" // ★追加：ログ機能を使用
+#include "resp/ResponseBuilder.hpp"
+#include "http/Request.hpp"   // Cパートの暫定Request
 #include <sstream> 
 
 // ----------------------------
@@ -208,16 +210,38 @@ void Server::handleClient(int index) {
             printf("Request complete from fd=%d:\n%s\n",
                 fd, request.c_str());
 
-            std::string response =
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: text/plain\r\n"
-                "Content-Length: 12\r\n"
-                "Connection: keep-alive\r\n"
-                "\r\n"
-                "Hello World\n";
+			// ---- ResponseBuilder を呼ぶ（暫定パース版） ----
+			// リクエストの1行目だけパース（例: "GET / HTTP/1.1"）
+			std::string firstLine;
+			{
+				std::string::size_type eol = request.find("\r\n");
+				firstLine = (eol == std::string::npos) ? request : request.substr(0, eol);
+			}
+			std::string method = "GET", uri = "/", version = "HTTP/1.1";
+			{
+				std::istringstream iss(firstLine);
+				iss >> method >> uri >> version;
+			}
 
-            queueSend(fd, response);
-            clients[fd].recvBuffer.erase(0, request.size());
+			// 暫定 Request に詰める
+			Request req;
+			req.method = method;
+			req.uri = uri;
+			req.version = version;
+			// まずは close 運用（Server 側も close なので矛盾しない）
+			req.connectionClose = true;
+
+			ResponseBuilder rb;
+			// 仮のドキュメントルートと index 名（Config出来たら差し替え）
+			const std::string docRoot = "./www";
+			const std::string index   = "index.html";
+
+			std::string response = rb.build(req, docRoot, index);
+			queueSend(fd, response);
+			// ---- ここまで ----
+
+			// 受信バッファから今回のリクエストぶんを削る
+			clients[fd].recvBuffer.erase(0, request.size());
         }
     }
 }

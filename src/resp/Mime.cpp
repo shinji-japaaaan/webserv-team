@@ -1,23 +1,34 @@
 #include "resp/Mime.hpp"
 #include <map>
+#include <string>
 
-//ファイルの拡張子から、返すファイルの種類を判別するコード
-//MIMEはMultipurpose Internet Mail Extensionsの省略
-static const std::map<std::string, std::string> kMime = {
-    {".html","text/html"}, {".htm","text/html"},
-    {".css","text/css"},   {".js","application/javascript"},
-    {".png","image/png"},  {".jpg","image/jpeg"},
-    {".jpeg","image/jpeg"},{".gif","image/gif"},
-    {".ico","image/x-icon"},{".txt","text/plain"}
-};
-
+// --- そのまま流用OK ---
 static std::string extOf(const std::string& path) {
     std::string::size_type p = path.rfind('.');
     return (p == std::string::npos) ? "" : path.substr(p);
 }
 
+// C++98対応: 初回呼び出し時に map を組み立てる
+static const std::map<std::string, std::string>& mimeMap() {
+    static std::map<std::string, std::string> m;
+    if (m.empty()) {
+        m.insert(std::make_pair(".html", "text/html"));
+        m.insert(std::make_pair(".htm",  "text/html"));
+        m.insert(std::make_pair(".css",  "text/css"));
+        m.insert(std::make_pair(".js",   "application/javascript"));
+        m.insert(std::make_pair(".png",  "image/png"));
+        m.insert(std::make_pair(".jpg",  "image/jpeg"));
+        m.insert(std::make_pair(".jpeg", "image/jpeg"));
+        m.insert(std::make_pair(".gif",  "image/gif"));
+        m.insert(std::make_pair(".ico",  "image/x-icon"));
+        m.insert(std::make_pair(".txt",  "text/plain"));
+    }
+    return m;
+}
+
 std::string mime::fromPath(const std::string& path) {
     std::string ext = extOf(path);
-    std::map<std::string,std::string>::const_iterator it = kMime.find(ext);
-    return (it != kMime.end()) ? it->second : "application/octet-stream";
+    const std::map<std::string,std::string>& m = mimeMap();
+    std::map<std::string,std::string>::const_iterator it = m.find(ext);
+    return (it != m.end()) ? it->second : "application/octet-stream";
 }
