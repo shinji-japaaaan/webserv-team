@@ -26,12 +26,6 @@ ServerManager::~ServerManager() {
 bool ServerManager::loadConfig(const std::string &path) {
     // Bさん：ConfigParserをここに統合してください
     ConfigParser parser;
-
-    // if (!parser.parse(path)) {
-    //     std::cerr << "Config parsing failed" << std::endl;
-    //     return false;
-    // }
-
     configs = parser.getServerConfigs(path);  // vector<ServerConfig>を受け取る想定
     return true;
 }

@@ -57,7 +57,7 @@ std::vector<ServerConfig> ConfigParser::getServerConfigs(const std::string &path
     throw std::runtime_error("Invalid Configuration File");
   }
   file.close();
-  print_configServers();
+//   print_configServers(); // for test
   return _serverConfigs;
 }
 
