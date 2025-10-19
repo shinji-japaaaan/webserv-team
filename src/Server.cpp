@@ -237,16 +237,7 @@ void Server::handleClientSend(int index) {
                 fds[index].events &= ~POLLOUT; // 送信完了 → POLLOUT 無効化
                 handleConnectionClose(fd);
             }
-        } else if (n == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            logError("write", strerror(errno));
-            perror("write");
-            close(fd);
-            fds[index] = fds[nfds-1];
-            nfds--;
-            clients.erase(fd);
-        }
-    } else {
-        fds[index].events &= ~POLLOUT; // 送信バッファ空なら POLLOUT 無効化
+        } 
     }
 }
 
@@ -308,24 +299,20 @@ void Server::handleConnectionClose(int fd)
 
 // 接続切断処理（recv エラーや切断時の処理）
 void Server::handleDisconnect(int fd, int index, int bytes) {
-    if (bytes == 0) {
-        std::stringstream ss;
-        ss << fd;
-        logMessage(INFO, "Client disconnected: fd=" + ss.str());
-    } else if (bytes < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK)
-            return;
-        // --- 修正箇所: 異常時ログ出力追加 ---
-        logError("recv", strerror(errno));
-    } else {
-        // bytes > 0 の場合はここに来ない（保険）
-        return;
+    // bytes が 0 または負の場合は接続終了とみなす
+    if (bytes <= 0) {
+        if (bytes == 0) {
+            logMessage(INFO, "Client disconnected: fd=" + std::to_string(fd));
+        } else {
+            logMessage(INFO, "Client read error or disconnected: fd=" + std::to_string(fd));
+        }
+        close(fd);// ソケットを閉じる
+        fds[index] = fds[nfds - 1];// fds 配列の詰め替え
+        nfds--;
+        clients.erase(fd);// clients から削除
     }
-    close(fd);
-    fds[index] = fds[nfds - 1]; // 配列の詰め替え
-    nfds--;
-    clients.erase(fd);
 }
+
 
 // ----------------------------
 // ヘッダ解析・リクエスト処理
