@@ -30,6 +30,10 @@ private:
     int nfds;                     // fdsの有効数
     int port;                     // 待ち受けポート番号
 
+    std::string host;             // 追加: 待ち受けホストアドレス
+    std::string root;             // 追加: ドキュメントルート
+    std::map<int, std::string> errorPages; // 追加: エラーページ設定
+
     std::map<int, ClientInfo> clients; // fd -> ClientInfo 対応表
 
     // -----------------------------
@@ -64,7 +68,8 @@ public:
     // -----------------------------
     // コンストラクタ / デストラクタ
     // -----------------------------
-    Server(int port);
+    Server(int port, const std::string &host, const std::string &root,
+           const std::map<int, std::string> &errorPages); // 追加: 新形式
     ~Server();
 
     // -----------------------------
