@@ -197,27 +197,24 @@ void Server::handleClient(int index) {
         return;
     } else {
       buffer[bytes] = '\0';
-      clients[fd].recvBuffer.append(
-          buffer); // ここにbufferに入った文字列が入っている。
-      std::cout << "元の文字列:\n" << clients[fd].recvBuffer << std::endl;
+      clients[fd].recvBuffer.append(buffer);
+        while (true) {
+            std::string request =
+                extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
+            if (request.empty()) break;
 
-		while (true) {
-			std::string request =
-				extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
-			if (request.empty()) break;
+            printRequest(clients[fd].currentRequest);
+            printf("Request complete from fd=%d\n", fd);
 
-			printRequest(clients[fd].currentRequest);
-			printf("Request complete from fd=%d:\n%s\n", fd, request.c_str());
+            // ---- ResponseBuilder を呼ぶ（ラッパー版）----
+            ResponseBuilder rb;
+            std::string response = rb.generateResponse(clients[fd].currentRequest);
+            queueSend(fd, response);
+            // ---------------------------------------------
 
-			// ---- ResponseBuilder を呼ぶ（ラッパー版）----
-			ResponseBuilder rb;
-			std::string response = rb.generateResponse(clients[fd].currentRequest);
-			queueSend(fd, response);
-			// ---------------------------------------------
-
-			// このリクエスト分を削る（※二重eraseしない）
-			clients[fd].recvBuffer.erase(0, request.size());
-		}
+            // このリクエスト分を削る（※二重eraseしない）
+            clients[fd].recvBuffer.erase(0, request.size());
+        }
     }
 }
 
