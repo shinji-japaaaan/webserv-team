@@ -37,24 +37,39 @@ Request RequestParser::parse(const std::string &buffer) {
     std::cerr << "Unsupported HTTP version: " << req.version << std::endl;
     req.method = "";  // 無効化（上位で検出できるように）
     return req;       // バージョンが不正なので即リターン
+  }
 
   // --- ヘッダー部 ---
+  std::string lastKey;
   while (std::getline(stream, line)) {
-    if (line == "\r" || line.empty())
-      break;
-    size_t pos = line.find(":");
-    if (pos == std::string::npos)
-      continue;
-    std::string key = line.substr(0, pos);
-    std::string value = line.substr(pos + 1);
+      if (line == "\r" || line.empty())
+          break;
 
-    // トリム
-    key.erase(std::remove_if(key.begin(), key.end(), ::isspace), key.end());
-    value.erase(std::remove(value.begin(), value.end(), '\r'), value.end());
-    value.erase(0, value.find_first_not_of(" \t"));
-    value.erase(value.find_last_not_of(" \t") + 1);
+      // 折り返し行かチェック
+      if (!line.empty() && (line[0] == ' ' || line[0] == '\t')) {
+          if (!lastKey.empty()) {
+              // 前のヘッダーに値を追加
+              req.headers[lastKey] += " " + line.substr(1); // 先頭空白を除く
+          }
+          continue;
+      }
 
-    req.headers[key] = value;
+      size_t pos = line.find(":");
+      if (pos == std::string::npos)
+          continue;
+
+      std::string key = line.substr(0, pos);
+      std::string value = line.substr(pos + 1);
+
+      // 前後空白のみ削除
+      key.erase(0, key.find_first_not_of(" \t"));
+      key.erase(key.find_last_not_of(" \t") + 1);
+
+      value.erase(0, value.find_first_not_of(" \t"));
+      value.erase(value.find_last_not_of(" \t\r") + 1);
+
+      req.headers[key] = value;
+      lastKey = key; // 次の折り返し行用に保持
   }
 
   // --- Body ---
