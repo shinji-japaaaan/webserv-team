@@ -30,8 +30,13 @@ Request RequestParser::parse(const std::string &buffer) {
     return req;
   {
     std::istringstream lineStream(line);
-    lineStream >> req.method >> req.uri; // HTTP/1.1 は無視
+    lineStream >> req.method >> req.uri >> req.version;
   }
+  // ✅ HTTPバージョンを確認
+  if (req.version != "HTTP/1.0" && req.version != "HTTP/1.1") {
+    std::cerr << "Unsupported HTTP version: " << req.version << std::endl;
+    req.method = "";  // 無効化（上位で検出できるように）
+    return req;       // バージョンが不正なので即リターン
 
   // --- ヘッダー部 ---
   while (std::getline(stream, line)) {
