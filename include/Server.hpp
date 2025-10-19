@@ -64,6 +64,12 @@ private:
 
     int findIndexByFd(int fd);
 
+    // ----------------------------
+    // ここから追加：CGI対応用
+    // ----------------------------
+    bool isCgiRequest(const Request &req);               // CGI判定関数
+    std::string executeCgi(const Request &req);          // CGI実行関数
+
 public:
     // -----------------------------
     // コンストラクタ / デストラクタ

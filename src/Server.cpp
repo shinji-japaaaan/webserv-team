@@ -206,15 +206,92 @@ void Server::handleClient(int index) {
             printRequest(clients[fd].currentRequest);
             printf("Request complete from fd=%d\n", fd);
 
-            // ---- ResponseBuilder を呼ぶ（ラッパー版）----
-            ResponseBuilder rb;
-            std::string response = rb.generateResponse(clients[fd].currentRequest);
-            queueSend(fd, response);
-            // ---------------------------------------------
+            std::string response;
+
+            // --- CGI判定 ---
+            bool isCgi = isCgiRequest(clients[fd].currentRequest);
+
+            if (isCgi) {
+                response = executeCgi(clients[fd].currentRequest);
+            } else {
+                ResponseBuilder rb;
+                response = rb.generateResponse(clients[fd].currentRequest);
+            }
 
             // このリクエスト分を削る（※二重eraseしない）
             clients[fd].recvBuffer.erase(0, request.size());
         }
+    }
+}
+
+bool Server::isCgiRequest(const Request &req) {
+    if (req.uri.size() < 4) return false;
+    std::string ext = req.uri.substr(req.uri.find_last_of("."));
+    return (ext == ".php" || ext == ".py");
+}
+
+// ----------------------------
+// CGI実行用関数
+// ----------------------------
+
+std::string Server::executeCgi(const Request &req) {
+    int inPipe[2], outPipe[2];
+    if (pipe(inPipe) < 0 || pipe(outPipe) < 0) {
+        return "Status: 500 Internal Server Error\r\n\r\nPipe creation failed";
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        return "Status: 500 Internal Server Error\r\n\r\nFork failed";
+    }
+
+    if (pid == 0) { // 子プロセス
+        // stdin/outをpipeに差し替え
+        dup2(inPipe[0], STDIN_FILENO);
+        dup2(outPipe[1], STDOUT_FILENO);
+        close(inPipe[1]); close(inPipe[0]);
+        close(outPipe[0]); close(outPipe[1]);
+
+        // 環境変数設定
+        setenv("REQUEST_METHOD", req.method.c_str(), 1);
+        {
+            std::ostringstream oss;
+            oss << req.body.size();
+            setenv("CONTENT_LENGTH", oss.str().c_str(), 1);
+        }
+        setenv("SCRIPT_FILENAME", req.uri.c_str(), 1);
+
+        char* argv[] = {const_cast<char*>(req.uri.c_str()), NULL};
+        char* envp[] = {NULL};
+        execve(req.uri.c_str(), argv, envp);
+        exit(1); // exec失敗時
+    } else { // 親プロセス
+        close(inPipe[0]);
+        close(outPipe[1]);
+
+        // リクエストボディを子プロセスに送る
+        if (!req.body.empty()) {
+            write(inPipe[1], req.body.c_str(), req.body.size());
+        }
+        close(inPipe[1]);
+
+        // 子プロセスの出力を取得
+        std::string result;
+        char buf[4096];
+        ssize_t n;
+        while ((n = read(outPipe[0], buf, sizeof(buf))) > 0) {
+            result.append(buf, n);
+        }
+        close(outPipe[0]);
+
+        // 必要ならHTTPヘッダ追加
+        if (result.find("HTTP/") != 0) {
+            std::ostringstream oss;
+            oss << "HTTP/1.1 200 OK\r\nContent-Length: " << result.size() << "\r\n\r\n" << result;
+            result = oss.str();
+        }
+
+        return result;
     }
 }
 
@@ -301,11 +378,13 @@ void Server::handleConnectionClose(int fd)
 void Server::handleDisconnect(int fd, int index, int bytes) {
     // bytes が 0 または負の場合は接続終了とみなす
     if (bytes <= 0) {
+        std::ostringstream oss;
         if (bytes == 0) {
-            logMessage(INFO, "Client disconnected: fd=" + std::to_string(fd));
+            oss << "Client disconnected: fd=" << fd;
         } else {
-            logMessage(INFO, "Client read error or disconnected: fd=" + std::to_string(fd));
+            oss << "Client read error or disconnected: fd=" << fd;
         }
+        logMessage(INFO, oss.str());
         close(fd);// ソケットを閉じる
         fds[index] = fds[nfds - 1];// fds 配列の詰め替え
         nfds--;
