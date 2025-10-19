@@ -1,12 +1,25 @@
 #include "../include/RequestParser.hpp"
 
 bool RequestParser::isRequestComplete(const std::string &buffer) {
-  // ヘッダー終了位置（\r\n\r\n）を探す
-  size_t headerEnd = buffer.find("\r\n\r\n");
-  if (headerEnd == std::string::npos) {
-    return false; // ヘッダーがまだ届いていない
-  }
-  return true;
+    size_t headerEnd = buffer.find("\r\n\r\n");
+    if (headerEnd == std::string::npos)
+        return false; // ヘッダー未到着
+
+    // Content-Length を取得
+    std::string headerPart = buffer.substr(0, headerEnd);
+    size_t contentLength = 0;
+    std::istringstream stream(headerPart);
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (line.find("Content-Length:") == 0) {
+            contentLength = std::strtoul(line.substr(15).c_str(), NULL, 10);
+            break;
+        }
+    }
+
+    // body が届いているか
+    size_t bodySize = buffer.size() - (headerEnd + 4);
+    return bodySize >= contentLength;
 }
 
 RequestParser::RequestParser()
