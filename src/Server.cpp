@@ -301,18 +301,19 @@ void Server::handleConnectionClose(int fd)
 void Server::handleDisconnect(int fd, int index, int bytes) {
     // bytes が 0 または負の場合は接続終了とみなす
     if (bytes <= 0) {
+        std::ostringstream oss;
         if (bytes == 0) {
-            logMessage(INFO, "Client disconnected: fd=" + std::to_string(fd));
+            oss << "Client disconnected: fd=" << fd;
         } else {
-            logMessage(INFO, "Client read error or disconnected: fd=" + std::to_string(fd));
+            oss << "Client read error or disconnected: fd=" << fd;
         }
+        logMessage(INFO, oss.str());
         close(fd);// ソケットを閉じる
         fds[index] = fds[nfds - 1];// fds 配列の詰め替え
         nfds--;
         clients.erase(fd);// clients から削除
     }
 }
-
 
 // ----------------------------
 // ヘッダ解析・リクエスト処理
