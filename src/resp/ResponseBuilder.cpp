@@ -9,6 +9,15 @@
 #include <ctime>
 
 // パスがフォルダか・ファイルかを確認するヘルパー
+//HTTPレスポンスを生成しているコードたち
+
+// 追加：仕様名に合わせたラッパー
+std::string ResponseBuilder::generateResponse(const Request& req) {
+    // TODO: BのConfig/Routeが入ったら docRoot/index を外から渡す設計に差し替え
+    return build(req, "./www", "index.html");
+}
+
+//パスがフォルダか・ファイルかを確認するヘルパー
 static bool isDir_(const std::string& p){
     struct stat st; if (stat(p.c_str(), &st) != 0) return false;
     return S_ISDIR(st.st_mode);

@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "ClientInfo.hpp"
+#include "RequestParser.hpp"
 
 #define MAX_CLIENTS 100
 
@@ -28,6 +29,10 @@ private:
     pollfd fds[MAX_CLIENTS];      // クライアントFD監視配列
     int nfds;                     // fdsの有効数
     int port;                     // 待ち受けポート番号
+
+    std::string host;             // 追加: 待ち受けホストアドレス
+    std::string root;             // 追加: ドキュメントルート
+    std::map<int, std::string> errorPages; // 追加: エラーページ設定
 
     std::map<int, ClientInfo> clients; // fd -> ClientInfo 対応表
 
@@ -49,7 +54,7 @@ private:
     // クライアント受信処理
     // -----------------------------
     void handleClient(int index);
-    std::string extractNextRequest(std::string &recvBuffer);
+    std::string extractNextRequest(std::string &recvBuffer, Request &currentRequest);
 
     // -----------------------------
     // クライアント送信処理
@@ -63,7 +68,8 @@ public:
     // -----------------------------
     // コンストラクタ / デストラクタ
     // -----------------------------
-    Server(int port);
+    Server(int port, const std::string &host, const std::string &root,
+           const std::map<int, std::string> &errorPages); // 追加: 新形式
     ~Server();
 
     // -----------------------------
@@ -73,7 +79,7 @@ public:
     void run();
 
     int getServerFd() const;
-    std::vector<int> getClientFds() const;  
+    std::vector<int> getClientFds() const;
 
     // ServerManager から呼ばれる安全な公開インターフェース
     void onPollEvent(int fd, short revents);

@@ -8,10 +8,12 @@ INC_DIR = include
 SRC = $(SRC_DIR)/main.cpp \
       $(SRC_DIR)/Server.cpp \
       $(SRC_DIR)/log.cpp \
+	  $(SRC_DIR)/RequestParser.cpp \
       $(SRC_DIR)/ServerManager.cpp \
 	  $(SRC_DIR)/resp/ErrorPages.cpp \
       $(SRC_DIR)/resp/Mime.cpp \
-      $(SRC_DIR)/resp/ResponseBuilder.cpp
+      $(SRC_DIR)/resp/ResponseBuilder.cpp \
+	  $(SRC_DIR)/ConfigParser.cpp \
 
 OBJ = $(SRC:.cpp=.o)
 

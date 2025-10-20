@@ -11,39 +11,24 @@ ServerManager::~ServerManager() {
     }
 }
 
-// ここでは仮にconfigsを読み込むだけ
 bool ServerManager::loadConfig(const std::string &path) {
-    // BさんのConfigParserを想定
-    // 今は仮に1つのポートだけ設定
-    (void)path; // 未使用回避
-    ServerConfig cfg;
-    cfg.port = 8080;
-    cfg.host = "0.0.0.0";
-    configs.push_back(cfg);
+    ConfigParser parser;
+    configs = parser.getServerConfigs(path);
     return true;
 }
 
-// bool ServerManager::loadConfig(const std::string &path) {
-//     // Bさん：ConfigParserをここに統合してください
-//     ConfigParser parser;
-
-//     if (!parser.parse(path)) {
-//         std::cerr << "Config parsing failed" << std::endl;
-//         return false;
-//     }
-
-//     configs = parser.getServerConfigs();  // vector<ServerConfig>を受け取る想定
-//     return true;
-// }
-
 bool ServerManager::initAllServers() {
-    for (size_t i = 0; i < configs.size(); i++) {
-        Server* srv = new Server(configs[i].port);
+    for (size_t i = 0; i < configs.size(); ++i) {
+        const ServerConfig &cfg = configs[i];
+        Server* srv = new Server(cfg.port, cfg.host, cfg.root, cfg.errorPages);
         if (!srv->init()) {
             delete srv;
             return false;
         }
         servers.push_back(srv);
+        std::cout << "Initialized server on " 
+                  << cfg.host << ":" << cfg.port 
+                  << " (root=" << cfg.root << ")" << std::endl;
     }
     return true;
 }

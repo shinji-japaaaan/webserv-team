@@ -1,6 +1,6 @@
 #pragma once
 #include <string>
-#include "http/Request.hpp"
+#include "RequestParser.hpp"
 
 // src/resp へと飛ばす関数
 class ResponseBuilder {
@@ -10,6 +10,8 @@ public:
                       const std::string& docRoot,
                       const std::string& indexName);
 
+	//ラッパーをする
+	std::string generateResponse(const Request& req);
 private:
     std::string buildStatic200_(const std::string& absPath, bool close);
     std::string httpDate_() const;
