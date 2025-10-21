@@ -13,6 +13,8 @@ struct PollEntry {
     int fd;
     short events;
     Server* server;
+    int clientFd;        // どのクライアントに紐づくCGIか
+    bool isCgiFd;        // CGI用パイプかどうか
 };
 
 class ServerManager {

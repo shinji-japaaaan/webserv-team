@@ -35,6 +35,19 @@ private:
     std::map<int, std::string> errorPages; // 追加: エラーページ設定
 
     std::map<int, ClientInfo> clients; // fd -> ClientInfo 対応表
+    
+    // -----------------------------
+    // ここから追加：CGI対応用
+    // -----------------------------
+    struct CgiProcess {
+        pid_t pid;
+        int inFd;   // CGIへの書き込み用
+        int outFd;  // CGIからの読み取り用
+        int clientFd; // ←追加: このCGIリクエストのクライアントFD
+        Request req;
+        std::string buffer;          // ←追加: CGI出力を一時的に蓄積
+};
+    std::map<int, CgiProcess> cgiMap; // key: outFd, value: 管理情報
 
     // -----------------------------
     // 初期化系
@@ -64,11 +77,12 @@ private:
 
     int findIndexByFd(int fd);
 
-    // ----------------------------
+    // -----------------------------
     // ここから追加：CGI対応用
-    // ----------------------------
+    // -----------------------------
     bool isCgiRequest(const Request &req);               // CGI判定関数
-    std::string executeCgi(const Request &req);          // CGI実行関数
+    void startCgiProcess(int clientFd, const Request &req);          // CGI実行関数
+    void handleCgiOutput(int outFd);                     // pollで読み取り可能になったCGI出力を処理
 
 public:
     // -----------------------------
@@ -82,13 +96,14 @@ public:
     // 初期化 / メインループ
     // -----------------------------
     bool init();
-    void run();
 
     int getServerFd() const;
     std::vector<int> getClientFds() const;
 
     // ServerManager から呼ばれる安全な公開インターフェース
     void onPollEvent(int fd, short revents);
+
+    std::vector<int> getCgiFds() const;                 // 現在監視中のCGI出力FDリスト
 };
 
 #endif
