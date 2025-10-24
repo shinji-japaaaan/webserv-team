@@ -3,6 +3,7 @@
 #include "RequestParser.hpp"
 #include "resp/ResponseBuilder.hpp" 
 #include <sstream> 
+#include <sys/wait.h>
 
 // ----------------------------
 // コンストラクタ・デストラクタ
@@ -101,37 +102,6 @@ bool Server::bindAndListen() {
 }
 
 // ----------------------------
-// メインループ
-// ----------------------------
-
-// サーバー実行（poll で I/O待機し、新規接続・クライアント処理）
-void Server::run() {
-    while (true) {
-        int ret = poll(fds, nfds, -1);
-        if (ret < 0) {
-            logMessage(ERROR, std::string("poll() failed: ") + strerror(errno));
-            perror("poll");
-            break;
-        }
-
-        // 新規接続の処理
-        if (fds[0].revents & POLLIN) {
-            handleNewConnection();
-        }
-
-        // 各クライアントの処理
-        for (int i = 1; i < nfds; i++) {
-            if (fds[i].revents & POLLIN) {
-                handleClient(i);
-            }
-            if (fds[i].revents & POLLOUT) {
-                handleClientSend(i);
-            }
-        }
-    }
-}
-
-// ----------------------------
 // クライアント接続処理
 // ----------------------------
 
@@ -206,15 +176,108 @@ void Server::handleClient(int index) {
             printRequest(clients[fd].currentRequest);
             printf("Request complete from fd=%d\n", fd);
 
-            // ---- ResponseBuilder を呼ぶ（ラッパー版）----
-            ResponseBuilder rb;
-            std::string response = rb.generateResponse(clients[fd].currentRequest);
-            queueSend(fd, response);
-            // ---------------------------------------------
+            std::string response;
 
+            Request &req = clients[fd].currentRequest;
+            bool isCgi = isCgiRequest(req);
+
+            if (isCgi) {
+                // ✅ CGIを非同期実行
+                startCgiProcess(fd, req);
+            } else {
+                ResponseBuilder rb;
+                std::string response = rb.generateResponse(req);
+                queueSend(fd, response);
+            }
             // このリクエスト分を削る（※二重eraseしない）
             clients[fd].recvBuffer.erase(0, request.size());
         }
+    }
+}
+
+bool Server::isCgiRequest(const Request &req) {
+    if (req.uri.size() < 4) return false;
+    std::string ext = req.uri.substr(req.uri.find_last_of("."));
+    return (ext == ".php");
+}
+
+// ----------------------------
+// CGI実行用関数
+// ----------------------------
+
+void Server::startCgiProcess(int clientFd, const Request &req) {
+    int inPipe[2], outPipe[2];
+    if (pipe(inPipe) < 0 || pipe(outPipe) < 0) return;
+
+    pid_t pid = fork();
+    if (pid == 0) { // --- 子プロセス ---
+        dup2(inPipe[0], STDIN_FILENO);
+        dup2(outPipe[1], STDOUT_FILENO);
+        close(inPipe[1]); close(outPipe[0]);
+        setenv("REQUEST_METHOD", req.method.c_str(), 1);
+        std::ostringstream len;
+        len << req.body.size();
+        setenv("CONTENT_LENGTH", len.str().c_str(), 1);
+        std::string scriptPath = root + req.uri;  // 例: /var/www/html/test.php
+        setenv("SCRIPT_FILENAME", scriptPath.c_str(), 1);
+        setenv("REDIRECT_STATUS", "200", 1);
+        char *argv[] = { (char*)"php-cgi", NULL };
+        execve("/usr/bin/php-cgi", argv, environ);
+        exit(1);
+    }
+
+    // --- 親プロセス ---
+    close(inPipe[0]);
+    close(outPipe[1]);
+
+    // 非ブロッキング設定
+    fcntl(outPipe[0], F_SETFL, O_NONBLOCK);
+
+    // クライアント→CGI 入力送信
+    if (!req.body.empty()) write(inPipe[1], req.body.c_str(), req.body.size());
+    close(inPipe[1]);
+
+    // poll 監視に追加
+    struct pollfd pfd;
+    pfd.fd = outPipe[0];
+    pfd.events = POLLIN;
+    fds[nfds++] = pfd;  // nfds は現在の要素数
+
+    // 管理マップに登録
+    CgiProcess proc;
+    proc.clientFd = clientFd;
+    proc.pid = pid;
+    proc.outFd = outPipe[0];
+    cgiMap[outPipe[0]] = proc;
+}
+
+void Server::handleCgiOutput(int fd) {
+    char buf[4096];
+    ssize_t n = read(fd, buf, sizeof(buf));
+
+    if (n > 0) {
+        cgiMap[fd].buffer.append(buf, n);
+        return;
+    }
+
+    if (n == 0) { // EOF
+        int clientFd = cgiMap[fd].clientFd;
+        
+        //-----リスポンス組み立て-----
+        std::string body = cgiMap[fd].buffer;
+        if (body.find("HTTP/") != 0) {
+            std::ostringstream oss;
+            oss << "HTTP/1.1 200 OK\r\n"
+                << "Content-Length: " << body.size() << "\r\n\r\n" << body;
+            body = oss.str();
+        }
+        //---------------------------
+        
+        // クライアントへ送信キューに追加
+        queueSend(clientFd, body);
+        close(fd);
+        waitpid(cgiMap[fd].pid, NULL, 0);
+        cgiMap.erase(fd);
     }
 }
 
@@ -344,12 +407,19 @@ std::vector<int> Server::getClientFds() const {
 void Server::onPollEvent(int fd, short revents) {
     if (fd == serverFd && (revents & POLLIN)) {
         handleNewConnection();
-    } else {
-        if (revents & POLLIN)
-            handleClient(findIndexByFd(fd));
-        if (revents & POLLOUT)
-            handleClientSend(findIndexByFd(fd));
+        return;
     }
+
+    // 🔹 CGI出力ファイルディスクリプタなら
+    if (cgiMap.count(fd)) {
+        handleCgiOutput(fd);
+        return;
+    }
+
+    // 🔹 通常クライアント
+    int idx = findIndexByFd(fd);
+    if (revents & POLLIN) handleClient(idx);
+    if (revents & POLLOUT) handleClientSend(idx);
 }
 
 // fdからindexを見つける補助関数

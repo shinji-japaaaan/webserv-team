@@ -87,9 +87,28 @@ std::vector<PollEntry> ServerManager::buildPollEntries() {
             entry.server = srv;
             pollEntries.push_back(entry);
         }
+
+        // --- CGI 出力パイプ ---
+        std::vector<int> cgiFds = srv->getCgiFds();
+        for (size_t j = 0; j < cgiFds.size(); j++) {
+            PollEntry entry;
+            entry.fd = cgiFds[j];
+            entry.events = POLLIN; // CGIは読むだけ
+            entry.server = srv;
+            pollEntries.push_back(entry);
+        }
     }
 
     return pollEntries;
+}
+
+std::vector<int> Server::getCgiFds() const {
+    std::vector<int> fds;
+    for (std::map<int, CgiProcess>::const_iterator it = cgiMap.begin();
+        it != cgiMap.end(); ++it) {
+        fds.push_back(it->first);
+    }
+    return fds;
 }
 
 // ----------------------------
