@@ -8,6 +8,7 @@ struct ServerConfig {
   std::string host;
   std::string root;
   std::map<int, std::string> errorPages;
+  size_t clientMaxBodySize;
 };
 
 class ConfigParser {

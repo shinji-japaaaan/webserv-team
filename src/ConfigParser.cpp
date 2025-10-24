@@ -128,7 +128,7 @@ void ConfigParser::init_ServerConfig() {
   _cfg.host = "";
   _cfg.root = "";
   _cfg.errorPages.clear();
-
+  _cfg.clientMaxBodySize = 512; // ← ここでデフォルト512B
 }
 
 void ConfigParser::print_configServers(){
