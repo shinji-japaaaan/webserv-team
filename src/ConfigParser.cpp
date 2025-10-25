@@ -195,6 +195,7 @@ void ConfigParser::init_ServerConfig() {
 //   _cfg.server_name = "";
   _cfg.location.clear();
   _cfg.errorPages.clear();
+  _cfg.clientMaxBodySize = 512; // ← ここでデフォルト512B
 }
 
 void ConfigParser::print_configServers() {
