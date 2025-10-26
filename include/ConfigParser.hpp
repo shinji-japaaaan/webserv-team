@@ -32,7 +32,6 @@ struct ServerConfig {
     std::map<int, std::string> ret;
   };
   std::map<std::string, Location> location;
-  size_t clientMaxBodySize;
 };
 
 class ConfigParser {
