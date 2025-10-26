@@ -18,11 +18,13 @@ Server::Server(const ServerConfig &config)
   root(config.root),
   errorPages(config.errorPages)
 {
-    // デフォルト max_body_size を location "/" から設定（あれば）
-    if (config.location.find("/") != config.location.end())
-        clientMaxBodySize = config.location.at("/").max_body_size;
-    else
-        clientMaxBodySize = 0; // デフォルト値
+    // serverブロックで max_body_size が指定されていれば採用
+    if (config.max_body_size > 0) {
+        clientMaxBodySize = config.max_body_size;
+    } else {
+        // 無制限
+        clientMaxBodySize = SIZE_MAX;
+    }
 }
 
 
@@ -176,39 +178,55 @@ void Server::handleClient(int index) {
     if (bytes <= 0) {
         handleDisconnect(fd, index, bytes);
         return;
-    } else {
-        // 今回の受信分を加えたら制限超えるかチェック
-        if (clients[fd].recvBuffer.size() + bytes > clientMaxBodySize) {
+    }
+
+    buffer[bytes] = '\0';
+    clients[fd].recvBuffer.append(buffer);
+
+    while (true) {
+        // 1リクエスト分を抽出
+        std::string requestStr =
+            extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
+        if (requestStr.empty()) break;
+
+        Request &req = clients[fd].currentRequest;
+
+        // Locationごとの max_body_size を取得（デフォルトは server の設定）
+        size_t maxSize = clientMaxBodySize; // serverデフォルト
+        const ServerConfig::Location* loc = getLocationForUri(req.uri);
+        if (loc && loc->max_body_size > 0) {
+            maxSize = loc->max_body_size; // Location の値で上書き
+        }
+
+        // ボディサイズのみをチェック
+        if (maxSize != SIZE_MAX &&
+            req.body.size() > maxSize) {
             sendPayloadTooLarge(fd);
-            clients[fd].shouldClose = true; // 後で送信完了時に閉じるフラグ
-            return; // ここで即終了！
+            clients[fd].shouldClose = true;
+            // このリクエストを処理せず終了
+            clients[fd].recvBuffer.erase(0, requestStr.size());
+            break;
         }
-        buffer[bytes] = '\0';
-        clients[fd].recvBuffer.append(buffer);
-        while (true) {
-            std::string request =
-                extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
-            if (request.empty()) break;
 
-            printRequest(clients[fd].currentRequest);
-            printf("Request complete from fd=%d\n", fd);
+        printRequest(req);
+        printf("Request complete from fd=%d\n", fd);
 
-            Request &req = clients[fd].currentRequest;
-            const ServerConfig::Location* loc = getLocationForUri(req.uri);
-            if (loc && !loc->cgi_path.empty()) {
-                startCgiProcess(fd, req);  // CGI実行
-            } else if (req.method == "POST") {
-                handlePost(fd, req);       // 通常のPOST処理
-            } else {
-                ResponseBuilder rb;
-                std::string response = rb.generateResponse(req);
-                queueSend(fd, response);
-            }
-            // このリクエスト分を削る（※二重eraseしない）
-            clients[fd].recvBuffer.erase(0, request.size());
+        if (loc && !loc->cgi_path.empty()) {
+            // CGIはLocationの中だけで実行
+            startCgiProcess(fd, req);
+        } else if (req.method == "POST") {
+            handlePost(fd, req);  // 通常のPOST処理
+        } else {
+            ResponseBuilder rb;
+            std::string response = rb.generateResponse(req);
+            queueSend(fd, response);
         }
+
+        // このリクエスト分を recvBuffer から削除
+        clients[fd].recvBuffer.erase(0, requestStr.size());
     }
 }
+
 
 const ServerConfig::Location* Server::getLocationForUri(const std::string &uri) const {
     const ServerConfig::Location* bestMatch = NULL;

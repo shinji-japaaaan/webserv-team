@@ -22,6 +22,10 @@
 
 #define MAX_CLIENTS 100
 
+#ifndef SIZE_MAX
+#define SIZE_MAX ((size_t)-1)
+#endif
+
 // 簡易ファイルパート構造体（multipart の戻り値に使用）
 struct FilePart {
     std::string name;     // フォームフィールド名 (例: "file")
