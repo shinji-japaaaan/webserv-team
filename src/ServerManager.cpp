@@ -20,7 +20,7 @@ bool ServerManager::loadConfig(const std::string &path) {
 bool ServerManager::initAllServers() {
     for (size_t i = 0; i < configs.size(); ++i) {
         const ServerConfig &cfg = configs[i];
-        Server* srv = new Server(cfg.port, cfg.host, cfg.root, cfg.errorPages, cfg.clientMaxBodySize);
+        Server* srv = new Server(cfg);
         if (!srv->init()) {
             delete srv;
             return false;

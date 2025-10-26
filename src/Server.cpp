@@ -1,6 +1,7 @@
 #include "Server.hpp"
 #include "log.hpp"
 #include "RequestParser.hpp"
+#include "ConfigParser.hpp"
 #include "resp/ResponseBuilder.hpp" 
 #include <sstream> 
 #include <sys/wait.h>
@@ -10,10 +11,20 @@
 // ----------------------------
 
 // サーバー初期化（ポート指定）
-Server::Server(int port, const std::string &host, const std::string &root,
-               const std::map<int, std::string> &errorPages, size_t clientMaxBodySize)
-    : serverFd(-1), nfds(1), port(port),
-      host(host), root(root), errorPages(errorPages), clientMaxBodySize(clientMaxBodySize) {}
+Server::Server(const ServerConfig &config)
+: cfg(config),
+  port(config.port),
+  host(config.host),
+  root(config.root),
+  errorPages(config.errorPages)
+{
+    // デフォルト max_body_size を location "/" から設定（あれば）
+    if (config.location.find("/") != config.location.end())
+        clientMaxBodySize = config.location.at("/").max_body_size;
+    else
+        clientMaxBodySize = 0; // デフォルト値
+}
+
 
 // サーバー破棄（全クライアントFDクローズ）
 Server::~Server() {
@@ -183,10 +194,11 @@ void Server::handleClient(int index) {
             printf("Request complete from fd=%d\n", fd);
 
             Request &req = clients[fd].currentRequest;
-            if (isCgiRequest(req)) {
-                startCgiProcess(fd, req);  // CGI は PHP に multipart を任せる
+            const ServerConfig::Location* loc = getLocationForUri(req.uri);
+            if (loc && !loc->cgi_path.empty()) {
+                startCgiProcess(fd, req);  // CGI実行
             } else if (req.method == "POST") {
-                handlePost(fd, req);       // Webserv 独自の multipart 処理はここで
+                handlePost(fd, req);       // 通常のPOST処理
             } else {
                 ResponseBuilder rb;
                 std::string response = rb.generateResponse(req);
@@ -197,6 +209,25 @@ void Server::handleClient(int index) {
         }
     }
 }
+
+const ServerConfig::Location* Server::getLocationForUri(const std::string &uri) const {
+    const ServerConfig::Location* bestMatch = NULL;
+    size_t longest = 0;
+
+    for (std::map<std::string, ServerConfig::Location>::const_iterator it =
+             cfg.location.begin(); it != cfg.location.end(); ++it) {
+        const std::string &path = it->first;
+        if (uri.compare(0, path.size(), path) == 0) { // prefix match
+            if (path.size() > longest) {
+                longest = path.size();
+                bestMatch = &(it->second);
+            }
+        }
+    }
+    return bestMatch;
+}
+
+
 
 void Server::sendPayloadTooLarge(int fd) {
     std::string body = "<html><body><h1>413 Payload Too Large</h1></body></html>";
