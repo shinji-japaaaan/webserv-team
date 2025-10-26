@@ -185,9 +185,18 @@ void Server::handleClient(int index) {
                 // ✅ CGIを非同期実行
                 startCgiProcess(fd, req);
             } else {
-                ResponseBuilder rb;
-                std::string response = rb.generateResponse(req);
-                queueSend(fd, response);
+				ResponseBuilder rb;
+
+				// Server が保持する現在の設定を ServerConfig に詰めて渡す
+				ServerConfig cfg;
+				cfg.port = this->port;
+				cfg.host = this->host;
+				cfg.root = this->root;
+				cfg.errorPages = this->errorPages;
+				// ↑BさんのConfigParserが拡張されたら、ここでallowMethodsとかlocationも入れる想定
+
+				std::string response = rb.generateResponse(req, cfg);
+				queueSend(fd, response);
             }
             // このリクエスト分を削る（※二重eraseしない）
             clients[fd].recvBuffer.erase(0, request.size());
@@ -196,9 +205,22 @@ void Server::handleClient(int index) {
 }
 
 bool Server::isCgiRequest(const Request &req) {
-    if (req.uri.size() < 4) return false;
-    std::string ext = req.uri.substr(req.uri.find_last_of("."));
-    return (ext == ".php");
+    // 1. クエリストリングを落とす (/foo.php?x=1 -> /foo.php)
+    std::string uri = req.uri;
+    size_t q = uri.find('?');
+    if (q != std::string::npos) {
+        uri = uri.substr(0, q);
+    }
+
+    // 2. 最後の '.' を探す
+    size_t dot = uri.find_last_of('.');
+    if (dot == std::string::npos) {
+        // 拡張子が無い → CGIじゃない
+        return false;
+    }
+
+    std::string ext = uri.substr(dot); // ".php" とか
+    return (ext == ".php"); // いまはPHPだけCGI扱い
 }
 
 // ----------------------------
