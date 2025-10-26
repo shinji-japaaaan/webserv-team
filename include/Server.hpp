@@ -13,11 +13,26 @@
 #include <fcntl.h>
 #include <cerrno>
 #include <vector>
+#include <fstream>
+#include <sstream>
 
 #include "ClientInfo.hpp"
 #include "RequestParser.hpp"
+#include "ConfigParser.hpp"
 
 #define MAX_CLIENTS 100
+
+#ifndef SIZE_MAX
+#define SIZE_MAX ((size_t)-1)
+#endif
+
+// 簡易ファイルパート構造体（multipart の戻り値に使用）
+struct FilePart {
+    std::string name;     // フォームフィールド名 (例: "file")
+    std::string filename; // 元のファイル名 (例: "hello.txt")
+    std::string contentType;
+    std::string content;  // バイナリ / テキストデータ
+};
 
 // サーバー全体を管理するクラス
 class Server {
@@ -28,11 +43,13 @@ private:
     int serverFd;                 // listen用ソケット
     pollfd fds[MAX_CLIENTS];      // クライアントFD監視配列
     int nfds;                     // fdsの有効数
-    int port;                     // 待ち受けポート番号
 
+    ServerConfig cfg;             // サーバー設定
+    int port;                     // 待ち受けポート番号
     std::string host;             // 追加: 待ち受けホストアドレス
     std::string root;             // 追加: ドキュメントルート
     std::map<int, std::string> errorPages; // 追加: エラーページ設定
+    size_t clientMaxBodySize;     // 追加: クライアント最大ボディサイズ
 
     std::map<int, ClientInfo> clients; // fd -> ClientInfo 対応表
     
@@ -46,7 +63,13 @@ private:
         int clientFd; // ←追加: このCGIリクエストのクライアントFD
         Request req;
         std::string buffer;          // ←追加: CGI出力を一時的に蓄積
-};
+        int elapsedLoops; // poll ループ数タイムアウト用
+        bool headerSent;
+        CgiProcess()
+        : pid(-1), inFd(-1), outFd(-1), clientFd(-1),
+          buffer(""), elapsedLoops(0), headerSent(false) {}
+
+    };
     std::map<int, CgiProcess> cgiMap; // key: outFd, value: 管理情報
 
     // -----------------------------
@@ -83,13 +106,37 @@ private:
     bool isCgiRequest(const Request &req);               // CGI判定関数
     void startCgiProcess(int clientFd, const Request &req);          // CGI実行関数
     void handleCgiOutput(int outFd);                     // pollで読み取り可能になったCGI出力を処理
+    void sendInternalServerError(int clientFd);
+
+    // -----------------------------
+    // POST 関連
+    // -----------------------------
+    void handlePost(int clientFd, const Request &req, const ServerConfig::Location* loc);
+
+    // ボディサイズを超えた時のレスポンス送信
+    void sendPayloadTooLarge(int fd);
+
+    // Content-Type ごとの処理（宣言）
+    void handleUrlEncodedForm(int clientFd, const Request &req, const ServerConfig::Location* loc);
+    void handleMultipartForm(int clientFd, const Request &req, const ServerConfig::Location* loc);
+
+    // 補助パーサー（宣言）
+    std::map<std::string, std::string> parseUrlEncoded(const std::string &body);
+    std::vector<FilePart> parseMultipart(const std::string &contentType, const std::string &body);
+    void queueSendChunk(int fd, const std::string &data);
+    std::string sanitizeFileName(const std::string &filename);
+
+    // URLデコード補助
+    std::string urlDecode(const std::string &s);
+
+    void sendGatewayTimeout(int clientFd);
+    const ServerConfig::Location* getLocationForUri(const std::string &uri) const;
 
 public:
     // -----------------------------
     // コンストラクタ / デストラクタ
     // -----------------------------
-    Server(int port, const std::string &host, const std::string &root,
-           const std::map<int, std::string> &errorPages); // 追加: 新形式
+    Server(const ServerConfig &config);
     ~Server();
 
     // -----------------------------
@@ -104,6 +151,7 @@ public:
     void onPollEvent(int fd, short revents);
 
     std::vector<int> getCgiFds() const;                 // 現在監視中のCGI出力FDリスト
+    void checkCgiTimeouts(int maxLoops); // pollループごとに呼ぶ
 };
 
 #endif

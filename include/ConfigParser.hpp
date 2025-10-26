@@ -19,6 +19,7 @@ struct ServerConfig {
 //   std::string server_name;
   std::string host;
   std::string root;
+  int max_body_size;
   std::map<int, std::string> errorPages;
   struct Location {
     std::string root;

@@ -20,7 +20,7 @@ bool ServerManager::loadConfig(const std::string &path) {
 bool ServerManager::initAllServers() {
     for (size_t i = 0; i < configs.size(); ++i) {
         const ServerConfig &cfg = configs[i];
-        Server* srv = new Server(cfg.port, cfg.host, cfg.root, cfg.errorPages);
+        Server* srv = new Server(cfg);
         if (!srv->init()) {
             delete srv;
             return false;
@@ -37,9 +37,11 @@ bool ServerManager::initAllServers() {
 // 全ServerのFDを1つのpoll配列で管理する
 // ----------------------------
 void ServerManager::runAllServers() {
+    const int pollTimeoutMs = 100;   // poll のタイムアウト
+    const int cgiTimeoutLoops = 50;  // 100ms * 50 ≒ 5秒
+
     while (true) {
         std::vector<PollEntry> entries = buildPollEntries();
-
         if (entries.empty()) continue;
 
         struct pollfd* fds = new struct pollfd[entries.size()];
@@ -49,7 +51,7 @@ void ServerManager::runAllServers() {
             fds[i].revents = 0;
         }
 
-        int ret = poll(fds, entries.size(), 100);
+        int ret = poll(fds, entries.size(), pollTimeoutMs);
         if (ret < 0) {
             perror("poll");
             delete[] fds;
@@ -57,6 +59,11 @@ void ServerManager::runAllServers() {
         }
 
         handlePollEvents(fds, entries.size(), entries);
+
+        // --- CGI タイムアウト処理は各サーバーに委譲 ---
+        for (size_t i = 0; i < servers.size(); ++i) {
+            servers[i]->checkCgiTimeouts(cgiTimeoutLoops);
+        }
 
         delete[] fds;
     }

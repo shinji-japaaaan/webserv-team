@@ -126,7 +126,11 @@ void ConfigParser::parse_server_inside(const std::string &str) {
 				throw std::runtime_error("Invalid Configuration File - error_page");
 			}
 			_cfg.errorPages[std::atoi(words[1].c_str())] = words[2];
-		} else if (words[0] == "location") {
+		} else if (words[0] == "max_body_size") {
+      if (words.size() != 2)
+          throw std::runtime_error("Invalid Configuration File - max_body_size");
+      _cfg.max_body_size = std::atoi(words[1].c_str());
+    }else if (words[0] == "location") {
 			if (words.size() != 3 || words[2] != "{") {
 				throw std::runtime_error("Invalid Configuration File - location");
 			}
@@ -193,6 +197,7 @@ void ConfigParser::init_ServerConfig() {
   _cfg.host = "";
   _cfg.root = "";
 //   _cfg.server_name = "";
+  _cfg.max_body_size = -1;
   _cfg.location.clear();
   _cfg.errorPages.clear();
 }
