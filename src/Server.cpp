@@ -245,8 +245,6 @@ const ServerConfig::Location* Server::getLocationForUri(const std::string &uri) 
     return bestMatch;
 }
 
-
-
 void Server::sendPayloadTooLarge(int fd) {
     std::string body = "<html><body><h1>413 Payload Too Large</h1></body></html>";
     std::ostringstream oss;
@@ -260,7 +258,17 @@ void Server::sendPayloadTooLarge(int fd) {
 
 void Server::handlePost(int clientFd, const Request &req, const ServerConfig::Location* loc) {
     std::cout << "[INFO] Handling POST for URI: " << req.uri << std::endl;
-    std::cout << "[INFO] Body size: " << req.body.size() << " bytes" << std::endl;
+    // method許可確認 saitoさんのコードをマージしたら、buildMethodNotAllowed(allow, cfg)が使えるようになるはず。その後にコメントアウトを外す
+    // if (loc && !loc->method.empty()) {
+    //     if (std::find(loc->method.begin(), loc->method.end(), "POST") == loc->method.end()) {
+    //         // ResponseBuilderを使って405を送信
+    //         ResponseBuilder rb;
+    //         std::string allow = joinMethods(loc->method); // "GET, HEAD, DELETE" など
+    //         std::string res = rb.buildMethodNotAllowed(allow, cfg);
+    //         queueSend(clientFd, res);
+    //         return;
+    //     }
+    // }
 
     // -----------------------------
     // Content-Type 分岐
@@ -289,6 +297,15 @@ void Server::handlePost(int clientFd, const Request &req, const ServerConfig::Lo
         queueSend(clientFd, res.str());
     }
 }
+
+// std::string Server::joinMethods(const std::vector<std::string>& methods) {
+//     std::string s;
+//     for (size_t i = 0; i < methods.size(); ++i) {
+//         if (i > 0) s += ", ";
+//         s += methods[i];
+//     }
+//     return s;
+// }
 
 // -----------------------------
 // 共通チャンク送信補助
@@ -335,6 +352,17 @@ void Server::handleUrlEncodedForm(int clientFd, const Request &req) {
 // -----------------------------
 // multipartフォーム対応
 // -----------------------------
+static std::string joinPath(const std::string& a, const std::string& b) {
+    if (a.empty()) return b; // a が空なら b を返す
+    if (a[a.size()-1] == '/' && !b.empty() && b[0] == '/') {
+        return a + b.substr(1); // 両方スラッシュなら b の先頭を削除
+    }
+    if (a[a.size()-1] != '/' && !b.empty() && b[0] != '/') {
+        return a + "/" + b; // 両方スラッシュなしなら間に追加
+    }
+    return a + b; // それ以外はそのまま結合
+}
+
 void Server::handleMultipartForm(int clientFd, const Request &req, const ServerConfig::Location* loc) {
     std::string contentType = req.headers.at("Content-Type");
     std::vector<FilePart> files = parseMultipart(contentType, req.body);
@@ -351,10 +379,25 @@ void Server::handleMultipartForm(int clientFd, const Request &req, const ServerC
     body << "<html><body><h1>Files Uploaded</h1><ul>";
     queueSendChunk(clientFd, body.str());
 
-    std::string baseUploadPath = "/tmp/webserv_upload/"; // デフォルト
+    std::string baseUploadPath;
+
+    // 1. location の upload_path
     if (loc && !loc->upload_path.empty()) {
         baseUploadPath = loc->upload_path;
     }
+    // 2. location の root
+    else if (loc && !loc->root.empty()) {
+        baseUploadPath = joinPath(loc->root, req.uri);
+    }
+    // 3. サーバーデフォルト root
+    else if (!cfg.root.empty()) {
+        baseUploadPath = joinPath(cfg.root, req.uri);
+    }
+    // 4. どれも無ければ一時ディレクトリ
+    else {
+        baseUploadPath = "/tmp/webserv_upload/";
+    }
+
 
     for (size_t i = 0; i < files.size(); ++i) {
         std::string safeName = sanitizeFileName(files[i].filename);
@@ -365,6 +408,18 @@ void Server::handleMultipartForm(int clientFd, const Request &req, const ServerC
             sendInternalServerError(clientFd);
             return;
         }
+        //saitoさんのコードをマージしたら、上記の簡単なエラー処理をではなく、下記のコメントアウト部分のようにlocation/サーバーのカスタム500ページ対応を実装する
+        // std::ofstream ofs(savePath.c_str(), std::ios::binary);
+        // if (!ofs.is_open()) {
+        //     // location/サーバーのカスタム500ページ対応
+        //     if (loc && loc->ret.count(500))
+        //         queueSend(clientFd, buildOkResponseFromFile(loc->ret.at(500), false, true));
+        //     else if (cfg.errorPages.count(500))
+        //         queueSend(clientFd, buildOkResponseFromFile(cfg.errorPages.at(500), false, true));
+        //     else
+        //         sendInternalServerError(clientFd);
+        //     return;
+        // }
         ofs.write(files[i].content.c_str(), files[i].content.size());
         ofs.close();
 
