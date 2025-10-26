@@ -211,7 +211,7 @@ void Server::handleClient(int index) {
         printRequest(req);
         printf("Request complete from fd=%d\n", fd);
 
-        if (loc && !loc->cgi_path.empty()) {
+        if(loc && !loc->cgi_path.empty() && isCgiRequest(req)) {
             // CGIはLocationの中だけで実行
             startCgiProcess(fd, req);
         } else if (req.method == "POST") {
