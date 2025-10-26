@@ -215,7 +215,7 @@ void Server::handleClient(int index) {
             // CGIはLocationの中だけで実行
             startCgiProcess(fd, req);
         } else if (req.method == "POST") {
-            handlePost(fd, req);  // 通常のPOST処理
+            handlePost(fd, req, loc);  // 通常のPOST処理
         } else {
             ResponseBuilder rb;
             std::string response = rb.generateResponse(req);
@@ -258,7 +258,7 @@ void Server::sendPayloadTooLarge(int fd) {
     queueSend(fd, oss.str());
 }
 
-void Server::handlePost(int clientFd, const Request &req) {
+void Server::handlePost(int clientFd, const Request &req, const ServerConfig::Location* loc) {
     std::cout << "[INFO] Handling POST for URI: " << req.uri << std::endl;
     std::cout << "[INFO] Body size: " << req.body.size() << " bytes" << std::endl;
 
@@ -274,7 +274,7 @@ void Server::handlePost(int clientFd, const Request &req) {
         handleUrlEncodedForm(clientFd, req);
     }
     else if (contentType.find("multipart/form-data") != std::string::npos) {
-        handleMultipartForm(clientFd, req);
+        handleMultipartForm(clientFd, req, loc);
     }
     else {
         // 未対応Content-Type
@@ -335,7 +335,7 @@ void Server::handleUrlEncodedForm(int clientFd, const Request &req) {
 // -----------------------------
 // multipartフォーム対応
 // -----------------------------
-void Server::handleMultipartForm(int clientFd, const Request &req) {
+void Server::handleMultipartForm(int clientFd, const Request &req, const ServerConfig::Location* loc) {
     std::string contentType = req.headers.at("Content-Type");
     std::vector<FilePart> files = parseMultipart(contentType, req.body);
 
@@ -351,11 +351,20 @@ void Server::handleMultipartForm(int clientFd, const Request &req) {
     body << "<html><body><h1>Files Uploaded</h1><ul>";
     queueSendChunk(clientFd, body.str());
 
+    std::string baseUploadPath = "/tmp/webserv_upload/"; // デフォルト
+    if (loc && !loc->upload_path.empty()) {
+        baseUploadPath = loc->upload_path;
+    }
+
     for (size_t i = 0; i < files.size(); ++i) {
         std::string safeName = sanitizeFileName(files[i].filename);
-        std::string savePath = "/tmp/webserv_upload/" + safeName;
+        std::string savePath = baseUploadPath + "/" + safeName;
 
         std::ofstream ofs(savePath.c_str(), std::ios::binary);
+        if (!ofs.is_open()) {
+            sendInternalServerError(clientFd);
+            return;
+        }
         ofs.write(files[i].content.c_str(), files[i].content.size());
         ofs.close();
 
