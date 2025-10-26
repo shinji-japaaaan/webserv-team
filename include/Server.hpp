@@ -117,7 +117,7 @@ private:
     void sendPayloadTooLarge(int fd);
 
     // Content-Type ごとの処理（宣言）
-    void handleUrlEncodedForm(int clientFd, const Request &req);
+    void handleUrlEncodedForm(int clientFd, const Request &req, const ServerConfig::Location* loc);
     void handleMultipartForm(int clientFd, const Request &req, const ServerConfig::Location* loc);
 
     // 補助パーサー（宣言）

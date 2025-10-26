@@ -279,7 +279,7 @@ void Server::handlePost(int clientFd, const Request &req, const ServerConfig::Lo
     else
         contentType = "";
     if (contentType.find("application/x-www-form-urlencoded") != std::string::npos) {
-        handleUrlEncodedForm(clientFd, req);
+        handleUrlEncodedForm(clientFd, req, loc);
     }
     else if (contentType.find("multipart/form-data") != std::string::npos) {
         handleMultipartForm(clientFd, req, loc);
@@ -319,39 +319,7 @@ void Server::queueSendChunk(int fd, const std::string &data) {
 // -----------------------------
 // URLエンコードフォーム対応
 // -----------------------------
-void Server::handleUrlEncodedForm(int clientFd, const Request &req) {
-    std::map<std::string, std::string> formData = parseUrlEncoded(req.body);
 
-    // ヘッダ送信
-    std::ostringstream hdr;
-    hdr << "HTTP/1.1 200 OK\r\n"
-        << "Content-Type: text/html\r\n"
-        << "Transfer-Encoding: chunked\r\n\r\n";
-    queueSend(clientFd, hdr.str());
-
-    // ボディ送信
-    std::ostringstream body;
-    body << "<html><body><h1>Form Received</h1><ul>";
-    queueSendChunk(clientFd, body.str());
-
-    for (std::map<std::string,std::string>::iterator it = formData.begin(); 
-         it != formData.end(); ++it) {
-        std::ostringstream li;
-        li << "<li>" << it->first << " = " << it->second << "</li>";
-        queueSendChunk(clientFd, li.str());
-    }
-
-    body.str(""); body.clear();
-    body << "</ul></body></html>";
-    queueSendChunk(clientFd, body.str());
-
-    // 最終チャンク
-    queueSend(clientFd, "0\r\n\r\n");
-}
-
-// -----------------------------
-// multipartフォーム対応
-// -----------------------------
 static std::string joinPath(const std::string& a, const std::string& b) {
     if (a.empty()) return b; // a が空なら b を返す
     if (a[a.size()-1] == '/' && !b.empty() && b[0] == '/') {
@@ -362,6 +330,94 @@ static std::string joinPath(const std::string& a, const std::string& b) {
     }
     return a + b; // それ以外はそのまま結合
 }
+
+void Server::handleUrlEncodedForm(int clientFd, const Request &req,
+                                  const ServerConfig::Location* loc)
+{
+    // -----------------------------
+    // 1. フォームデータ解析
+    // -----------------------------
+    std::map<std::string, std::string> formData = parseUrlEncoded(req.body);
+
+    // -----------------------------
+    // 2. 保存先決定
+    // -----------------------------
+    std::string baseUploadPath;
+
+    if (loc && !loc->upload_path.empty()) {
+        baseUploadPath = loc->upload_path;
+    }
+    else if (loc && !loc->root.empty()) {
+        baseUploadPath = joinPath(loc->root, req.uri);
+    }
+    else if (!cfg.root.empty()) {
+        baseUploadPath = joinPath(cfg.root, req.uri);
+    }
+    else {
+        baseUploadPath = "/tmp/webserv_upload/";
+    }
+
+    // -----------------------------
+    // 3. HTMLレスポンスヘッダ送信
+    // -----------------------------
+    std::ostringstream hdr;
+    hdr << "HTTP/1.1 200 OK\r\n"
+        << "Content-Type: text/html\r\n"
+        << "Transfer-Encoding: chunked\r\n\r\n";
+    queueSend(clientFd, hdr.str());
+
+    std::ostringstream body;
+    body << "<html><body><h1>Form Received</h1><ul>";
+    queueSendChunk(clientFd, body.str());
+
+    // -----------------------------
+    // 4. データ保存 + HTML生成
+    // -----------------------------
+    for (std::map<std::string,std::string>::iterator it = formData.begin();
+         it != formData.end(); ++it)
+    {
+        std::string safeName = sanitizeFileName(it->first + ".txt");
+        std::string savePath = baseUploadPath + "/" + safeName;
+
+        std::ofstream ofs(savePath.c_str(), std::ios::binary);
+        if (!ofs.is_open()) {
+            sendInternalServerError(clientFd);
+            return;
+        }
+        //saitoさんのコードをマージしたら、上記の簡単なエラー処理をではなく、下記のコメントアウト部分のようにlocation/サーバーのカスタム500ページ対応を実装する
+        // if (!ofs.is_open()) {
+        //     // カスタム500ページ対応
+        //     if (loc && loc->ret.count(500))
+        //         queueSend(clientFd, buildOkResponseFromFile(loc->ret.at(500), false, true));
+        //     else if (cfg.errorPages.count(500))
+        //         queueSend(clientFd, buildOkResponseFromFile(cfg.errorPages.at(500), false, true));
+        //     else
+        //         sendInternalServerError(clientFd);
+        //     return;
+        // }
+        // ofs.write(it->second.c_str(), it->second.size());
+        // ofs.close();
+
+        std::ostringstream li;
+        li << "<li>" << it->first << " = " << it->second << "</li>";
+        queueSendChunk(clientFd, li.str());
+    }
+
+    // -----------------------------
+    // 5. HTMLレスポンス終了
+    // -----------------------------
+    body.str(""); body.clear();
+    body << "</ul></body></html>";
+    queueSendChunk(clientFd, body.str());
+
+    // 最終チャンク
+    queueSend(clientFd, "0\r\n\r\n");
+}
+
+
+// -----------------------------
+// multipartフォーム対応
+// -----------------------------
 
 void Server::handleMultipartForm(int clientFd, const Request &req, const ServerConfig::Location* loc) {
     std::string contentType = req.headers.at("Content-Type");
