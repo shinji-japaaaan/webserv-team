@@ -1,137 +1,292 @@
 #include "resp/ResponseBuilder.hpp"
 #include "resp/Mime.hpp"
 #include <sys/stat.h>
+#include <unistd.h>     // unlink, access, etc
+#include <limits.h>     // PATH_MAX
 #include <fstream>
 #include <sstream>
 #include <ctime>
+#include <cerrno>
+#include <map>
 
-//HTTPレスポンスを生成しているコードたち
+// ====== ローカルヘルパ ======
 
-// 追加：仕様名に合わせたラッパー
-std::string ResponseBuilder::generateResponse(const Request& req) {
-    // TODO: BのConfig/Routeが入ったら docRoot/index を外から渡す設計に差し替え
-    return build(req, "./www", "index.html");
-}
-
-//パスがフォルダか・ファイルかを確認するヘルパー
-static bool isDir_(const std::string& p){
-    struct stat st; if (stat(p.c_str(), &st) != 0) return false;
+static bool isDirFs(const std::string& p){
+    struct stat st;
+    if (stat(p.c_str(), &st) != 0) return false;
     return S_ISDIR(st.st_mode);
 }
-static bool fileExists_(const std::string& p){
-    struct stat st; return stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+
+static bool isRegFs(const std::string& p){
+    struct stat st;
+    if (stat(p.c_str(), &st) != 0) return false;
+    return S_ISREG(st.st_mode);
 }
-static std::string join_(const std::string& a, const std::string& b){
+
+static std::string joinPath(const std::string& a, const std::string& b){
     if (a.empty()) return b;
     if (a[a.size()-1] == '/' && b.size() && b[0] == '/') return a + b.substr(1);
     if (a[a.size()-1] != '/' && b.size() && b[0] != '/') return a + "/" + b;
     return a + b;
 }
 
-//ファイルを読み取って文字列として返す（画像などのバイナリ含む）
-static std::string readFile_(const std::string& p){
+static std::string slurpFile(const std::string& p){
     std::ifstream ifs(p.c_str(), std::ios::in | std::ios::binary);
-    std::ostringstream oss; oss << ifs.rdbuf(); return oss.str();
+    std::ostringstream oss;
+    oss << ifs.rdbuf();
+    return oss.str();
 }
 
-//現在時刻を「HTTP用フォーマット」で作る（Dateヘッダ用）
+// tolower copy
+static std::string lowerCopy(const std::string &s) {
+    std::string r = s;
+    for (size_t i = 0; i < r.size(); ++i) {
+        if ('A' <= r[i] && r[i] <= 'Z') {
+            r[i] = char(r[i]-'A'+'a');
+        }
+    }
+    return r;
+}
+
+// 簡易 reason phrase (本当は http::Status::reason() があるならそれを使う)
+static std::string reasonPhrase(int code) {
+    switch (code) {
+        case 200: return "OK";
+        case 204: return "No Content";
+        case 403: return "Forbidden";
+        case 404: return "Not Found";
+        case 405: return "Method Not Allowed";
+        case 500: return "Internal Server Error";
+    }
+    return "Unknown";
+}
+
+// ====== ResponseBuilder メンバ ======
+
+// Dateヘッダ向け日付
 std::string ResponseBuilder::httpDate_() const {
-    char buf[128]; std::time_t t = std::time(0); std::tm g;
+    char buf[128];
+    std::time_t t = std::time(0);
+    std::tm g;
     gmtime_r(&t, &g);
     std::strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT", &g);
     return std::string(buf);
 }
 
-//404や405などのエラー応答を作る
-std::string ResponseBuilder::buildError_(int code, const std::string& msg, bool close){
-    std::string body = "<!doctype html><title>" + msg + "</title><h1>" + msg + "</h1>";
-    std::ostringstream res;
-    res << "HTTP/1.1 " << code << " " << msg << "\r\n"
-        << "Content-Type: text/html\r\n"
-        << "Content-Length: " << body.size() << "\r\n"
-        << "Connection: " << (close ? "close" : "keep-alive") << "\r\n"
-        << "Date: " << httpDate_() << "\r\n"
-        << "Server: webserv/0.1\r\n\r\n"
-        << body;
-    return res.str();
+bool ResponseBuilder::isTraversal(const std::string &uri) const {
+    // ".." または 大文字小文字無視の "%2e%2e" を含んだらアウト
+    if (uri.find("..") != std::string::npos) return true;
+    std::string low = lowerCopy(uri);
+    if (low.find("%2e%2e") != std::string::npos) return true;
+    return false;
 }
 
-//ファイルが見つかった場合の「200 OK」レスポンスを組み立てる関数
-std::string ResponseBuilder::buildStatic200_(const std::string& absPath, bool close){
-    std::string body = readFile_(absPath);
-    std::string ct = mime::fromPath(absPath);
+// GET/HEAD用: docRoot + uri を解決し、
+// - ディレクトリなら index.html を補う
+// - realpathでdocRoot外脱出を防ぎたいところだけど、まだ簡易版としてdocRoot直結 + traversalチェックでOKとしておく
+std::string ResponseBuilder::resolvePathForGet(
+    const std::string &docRoot,
+    const std::string &uri,
+    bool &isDirOut
+) const {
+    isDirOut = false;
+    std::string target = uri.empty() ? "/" : uri;
+
+    // join
+    std::string path = joinPath(docRoot, target);
+    // ディレクトリだったら index.html を追加
+    if (isDirFs(path)) {
+        isDirOut = true;
+        path = joinPath(path, "index.html");
+    }
+    return path;
+}
+
+// DELETE用は index.html など補完しない想定
+std::string ResponseBuilder::resolvePathForDelete(
+    const std::string &docRoot,
+    const std::string &uri
+) const {
+    std::string target = uri.empty() ? "/" : uri;
+    return joinPath(docRoot, target);
+}
+
+std::string ResponseBuilder::guessContentType(const std::string &path) const {
+    // 拡張子を安全に取り出す
+    size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos) {
+        // 拡張子がない場合のデフォルト
+        return "application/octet-stream";
+    }
+
+    std::string ext = path.substr(dot); // ".html" / ".txt" / ".png" など
+
+    // よくあるやつだけ軽くマッピング
+    if (ext == ".html" || ext == ".htm")
+        return "text/html; charset=utf-8";
+    if (ext == ".txt")
+        return "text/plain; charset=utf-8";
+    if (ext == ".css")
+        return "text/css";
+    if (ext == ".js")
+        return "application/javascript";
+    if (ext == ".json")
+        return "application/json";
+    if (ext == ".png")
+        return "image/png";
+    if (ext == ".gif")
+        return "image/gif";
+    if (ext == ".jpg" || ext == ".jpeg")
+        return "image/jpeg";
+
+    // よく分からない拡張子はバイナリ扱い
+    return "application/octet-stream";
+}
+
+// 200 OK (GET/HEAD用). headOnlyならボディ付けない
+std::string ResponseBuilder::buildOkResponseFromFile(
+    const std::string &absPath,
+    bool headOnly,
+    bool close
+) {
+    std::string body = slurpFile(absPath);
+    std::string ct = guessContentType(absPath);
+
     std::ostringstream res;
     res << "HTTP/1.1 200 OK\r\n"
         << "Content-Type: " << ct << "\r\n"
         << "Content-Length: " << body.size() << "\r\n"
         << "Connection: " << (close ? "close" : "keep-alive") << "\r\n"
         << "Date: " << httpDate_() << "\r\n"
+        << "Server: webserv/0.1\r\n\r\n";
+
+    if (!headOnly) {
+        res << body;
+    }
+    return res.str();
+}
+
+// 405
+std::string ResponseBuilder::buildMethodNotAllowed(
+    const std::string &allow,
+    const ServerConfig &cfg
+) {
+    (void)cfg; // いまcfg未使用だけど将来errorPages使うかもなので引数は残す
+
+    std::string body =
+        "<!doctype html><title>Method Not Allowed</title>"
+        "<h1>Method Not Allowed</h1>";
+
+    std::ostringstream res;
+    res << "HTTP/1.1 405 " << reasonPhrase(405) << "\r\n"
+        << "Content-Type: text/html\r\n"
+        << "Allow: " << allow << "\r\n"
+        << "Content-Length: " << body.size() << "\r\n"
+        << "Connection: close\r\n"
+        << "Date: " << httpDate_() << "\r\n"
         << "Server: webserv/0.1\r\n\r\n"
         << body;
     return res.str();
 }
 
-//リクエストを受けて、適切なレスポンスを作る本体関数
-std::string ResponseBuilder::build(const Request& req,
-                                   const std::string& docRoot,
-                                   const std::string& indexName)
-{
-	// 1) メソッド制限（今はGET/HEADのみ）
-	if (req.method != "GET" && req.method != "HEAD") {
-		// 405専用のレスポンス（Allowヘッダ付き）
-		std::string body =
-			"<!doctype html><title>Method Not Allowed</title>"
-			"<h1>Method Not Allowed</h1>";
-		std::ostringstream res;
-		res << "HTTP/1.1 405 Method Not Allowed\r\n"
-			<< "Content-Type: text/html\r\n"
-			<< "Allow: GET, HEAD\r\n"   // ← ここを追加！
-			<< "Content-Length: " << body.size() << "\r\n"
-			<< "Connection: close\r\n"
-			<< "Date: " << httpDate_() << "\r\n"
-			<< "Server: webserv/0.1\r\n\r\n"
-			<< body;
-		return res.str();
-	}
+// 汎用「本文なし」レスポンス（例：204, 403, 404の最小版に使える）
+std::string ResponseBuilder::buildSimpleResponse(
+    int statusCode,
+    const std::string &reason,
+    bool close,
+    const std::map<std::string, std::string> &extraHeaders
+) {
+    std::ostringstream res;
+    res << "HTTP/1.1 " << statusCode << " " << reason << "\r\n";
+    for (std::map<std::string,std::string>::const_iterator it = extraHeaders.begin();
+         it != extraHeaders.end(); ++it)
+    {
+        res << it->first << ": " << it->second << "\r\n";
+    }
+    res << "Content-Length: 0\r\n"
+        << "Connection: " << (close ? "close" : "keep-alive") << "\r\n"
+        << "Date: " << httpDate_() << "\r\n"
+        << "Server: webserv/0.1\r\n\r\n";
+    return res.str();
+}
 
-    // 2) パス結合＆index解決
-    std::string uri = req.uri.empty() ? "/" : req.uri;
-    // かんたん防御：ディレクトリトラバーサル抑止（本格化は後PR）
-    if (uri.find("..") != std::string::npos) return buildError_(403, "Forbidden", true);
+std::string ResponseBuilder::buildSimpleResponse(
+    int statusCode,
+    const std::string &reason,
+    bool close
+) {
+    std::map<std::string,std::string> dummy;
+    return buildSimpleResponse(statusCode, reason, close, dummy);
+}
 
-    std::string path = join_(docRoot, uri);
-    if (isDir_(path)) path = join_(path, indexName);
+// GET / HEAD 処理
+std::string ResponseBuilder::handleGetLike(
+    const Request &req,
+    const ServerConfig &cfg
+) {
+    // ディレクトリトラバーサル対策
+    if (isTraversal(req.uri)) {
+        return buildSimpleResponse(403, reasonPhrase(403), true);
+    }
 
-    if (!fileExists_(path)) {
-        // assets/errors/404.html があればそれを返す（任意）
-        std::string custom404 = join_("assets/errors", "404.html");
-        if (fileExists_(custom404)) {
-            std::string body = readFile_(custom404);
-            std::ostringstream res;
-            res << "HTTP/1.1 404 Not Found\r\n"
-                << "Content-Type: text/html\r\n"
-                << "Content-Length: " << body.size() << "\r\n"
-                << "Connection: close\r\n"
-                << "Date: " << httpDate_() << "\r\n"
-                << "Server: webserv/0.1\r\n\r\n"
-                << body;
-            return res.str();
+    bool isDirFlag = false;
+    std::string absPath = resolvePathForGet(cfg.root, req.uri, isDirFlag);
+
+    if (!isRegFs(absPath)) {
+        // カスタム404があればそれを返す、なければシンプル404
+        // いまはシンプル404（将来cfg.errorPages["404"]とか見てもいい）
+        return buildSimpleResponse(404, reasonPhrase(404), true);
+    }
+
+    bool headOnly = (req.method == "HEAD");
+    return buildOkResponseFromFile(absPath, headOnly, true);
+}
+
+// DELETE 処理
+std::string ResponseBuilder::handleDelete(
+    const Request &req,
+    const ServerConfig &cfg
+) {
+    // トラバーサル対策
+    if (isTraversal(req.uri)) {
+        return buildSimpleResponse(403, reasonPhrase(403), true);
+    }
+
+    std::string absPath = resolvePathForDelete(cfg.root, req.uri);
+
+    // 対象が存在しないなら 404
+    if (!isRegFs(absPath)) {
+        return buildSimpleResponse(404, reasonPhrase(404), true);
+    }
+
+    // ファイル削除を試みる
+    if (unlink(absPath.c_str()) == 0) {
+        // 成功 → 204 No Content
+        return buildSimpleResponse(204, reasonPhrase(204), true);
+    } else {
+        // 失敗。権限なさそうなら403、それ以外は500でもいい
+        if (errno == EACCES || errno == EPERM) {
+            return buildSimpleResponse(403, reasonPhrase(403), true);
         }
-        return buildError_(404, "Not Found", true);
+        return buildSimpleResponse(500, reasonPhrase(500), true);
+    }
+}
+
+// --- エントリーポイント ---
+// Server.cpp から呼ばれる
+std::string ResponseBuilder::generateResponse(
+    const Request &req,
+    const ServerConfig &cfg
+) {
+    // ここでメソッドごとの振り分けをする
+    if (req.method == "GET" || req.method == "HEAD") {
+        return handleGetLike(req, cfg);
+    }
+    if (req.method == "DELETE") {
+        return handleDelete(req, cfg);
     }
 
-    // 3) HEADはボディ無し
-    if (req.method == "HEAD") {
-        std::string ct = mime::fromPath(path);
-        std::ostringstream res;
-        res << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: " << ct << "\r\n"
-            << "Content-Length: " << readFile_(path).size() << "\r\n"
-            << "Connection: close\r\n"
-            << "Date: " << httpDate_() << "\r\n"
-            << "Server: webserv/0.1\r\n\r\n";
-        return res.str();
-    }
-
-    return buildStatic200_(path, /*close=*/true); // 既存挙動に合わせてclose。次PRでkeep-alive化
+    // 許可されてないメソッドは405
+    // TODO: 将来 cfg.allowedMethods (locationごと) からAllowを組み立てる
+    return buildMethodNotAllowed("GET, HEAD, DELETE", cfg);
 }
