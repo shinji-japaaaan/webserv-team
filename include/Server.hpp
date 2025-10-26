@@ -131,6 +131,7 @@ private:
 
     void sendGatewayTimeout(int clientFd);
     const ServerConfig::Location* getLocationForUri(const std::string &uri) const;
+    std::string joinMethods(const std::vector<std::string>& methods) const;
 
 public:
     // -----------------------------

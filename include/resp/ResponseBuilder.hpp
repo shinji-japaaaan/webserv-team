@@ -48,6 +48,10 @@ public:
     std::string buildFromCgi(const std::string &cgiRaw,
                              bool close);
 
+    std::string buildErrorResponseFromFile(const std::string &filePath,
+                                           int statusCode = 500,
+                                           bool close = true) const;
+
 private:
     // --- ヘルパ群 ---
 

@@ -258,17 +258,16 @@ void Server::sendPayloadTooLarge(int fd) {
 
 void Server::handlePost(int clientFd, const Request &req, const ServerConfig::Location* loc) {
     std::cout << "[INFO] Handling POST for URI: " << req.uri << std::endl;
-    // method許可確認 saitoさんのコードをマージしたら、buildMethodNotAllowed(allow, cfg)が使えるようになるはず。その後にコメントアウトを外す
-    // if (loc && !loc->method.empty()) {
-    //     if (std::find(loc->method.begin(), loc->method.end(), "POST") == loc->method.end()) {
-    //         // ResponseBuilderを使って405を送信
-    //         ResponseBuilder rb;
-    //         std::string allow = joinMethods(loc->method); // "GET, HEAD, DELETE" など
-    //         std::string res = rb.buildMethodNotAllowed(allow, cfg);
-    //         queueSend(clientFd, res);
-    //         return;
-    //     }
-    // }
+    if (loc && !loc->method.empty()) {
+        if (std::find(loc->method.begin(), loc->method.end(), "POST") == loc->method.end()) {
+            // ResponseBuilderを使って405を送信
+            ResponseBuilder rb;
+            std::string allow = joinMethods(loc->method); // "GET, HEAD, DELETE" など
+            std::string res = rb.buildMethodNotAllowed(allow, cfg);
+            queueSend(clientFd, res);
+            return;
+        }
+    }
 
     // -----------------------------
     // Content-Type 分岐
@@ -298,14 +297,14 @@ void Server::handlePost(int clientFd, const Request &req, const ServerConfig::Lo
     }
 }
 
-// std::string Server::joinMethods(const std::vector<std::string>& methods) {
-//     std::string s;
-//     for (size_t i = 0; i < methods.size(); ++i) {
-//         if (i > 0) s += ", ";
-//         s += methods[i];
-//     }
-//     return s;
-// }
+std::string Server::joinMethods(const std::vector<std::string>& methods) const {
+    std::string s;
+    for (size_t i = 0; i < methods.size(); ++i) {
+        if (i > 0) s += ", ";
+        s += methods[i];
+    }
+    return s;
+}
 
 // -----------------------------
 // 共通チャンク送信補助
@@ -381,22 +380,19 @@ void Server::handleUrlEncodedForm(int clientFd, const Request &req,
 
         std::ofstream ofs(savePath.c_str(), std::ios::binary);
         if (!ofs.is_open()) {
-            sendInternalServerError(clientFd);
+            ResponseBuilder rb;
+
+            if (loc && loc->ret.count(500))
+                queueSend(clientFd, rb.buildErrorResponseFromFile(loc->ret.at(500), 500, true));
+            else if (cfg.errorPages.count(500))
+                queueSend(clientFd, rb.buildErrorResponseFromFile(cfg.errorPages.at(500), 500, true));
+            else
+                sendInternalServerError(clientFd);
+
             return;
         }
-        //saitoさんのコードをマージしたら、上記の簡単なエラー処理をではなく、下記のコメントアウト部分のようにlocation/サーバーのカスタム500ページ対応を実装する
-        // if (!ofs.is_open()) {
-        //     // カスタム500ページ対応
-        //     if (loc && loc->ret.count(500))
-        //         queueSend(clientFd, buildOkResponseFromFile(loc->ret.at(500), false, true));
-        //     else if (cfg.errorPages.count(500))
-        //         queueSend(clientFd, buildOkResponseFromFile(cfg.errorPages.at(500), false, true));
-        //     else
-        //         sendInternalServerError(clientFd);
-        //     return;
-        // }
-        // ofs.write(it->second.c_str(), it->second.size());
-        // ofs.close();
+        ofs.write(it->second.c_str(), it->second.size());
+        ofs.close();
 
         std::ostringstream li;
         li << "<li>" << it->first << " = " << it->second << "</li>";
@@ -461,21 +457,17 @@ void Server::handleMultipartForm(int clientFd, const Request &req, const ServerC
 
         std::ofstream ofs(savePath.c_str(), std::ios::binary);
         if (!ofs.is_open()) {
-            sendInternalServerError(clientFd);
+            ResponseBuilder rb;
+
+            if (loc && loc->ret.count(500))
+                queueSend(clientFd, rb.buildErrorResponseFromFile(loc->ret.at(500), 500, true));
+            else if (cfg.errorPages.count(500))
+                queueSend(clientFd, rb.buildErrorResponseFromFile(cfg.errorPages.at(500), 500, true));
+            else
+                sendInternalServerError(clientFd);
+
             return;
         }
-        //saitoさんのコードをマージしたら、上記の簡単なエラー処理をではなく、下記のコメントアウト部分のようにlocation/サーバーのカスタム500ページ対応を実装する
-        // std::ofstream ofs(savePath.c_str(), std::ios::binary);
-        // if (!ofs.is_open()) {
-        //     // location/サーバーのカスタム500ページ対応
-        //     if (loc && loc->ret.count(500))
-        //         queueSend(clientFd, buildOkResponseFromFile(loc->ret.at(500), false, true));
-        //     else if (cfg.errorPages.count(500))
-        //         queueSend(clientFd, buildOkResponseFromFile(cfg.errorPages.at(500), false, true));
-        //     else
-        //         sendInternalServerError(clientFd);
-        //     return;
-        // }
         ofs.write(files[i].content.c_str(), files[i].content.size());
         ofs.close();
 
@@ -619,21 +611,14 @@ static std::string getExtension(const std::string &path) {
 }
 
 bool Server::isCgiRequest(const Request &req) {
-    // 1. クエリストリングを落とす (/foo.php?x=1 -> /foo.php)
+    // クエリストリングを落とす (/foo.php?x=1 -> /foo.php)
     std::string uri = req.uri;
     size_t q = uri.find('?');
     if (q != std::string::npos) {
         uri = uri.substr(0, q);
     }
 
-    // 2. 最後の '.' を探す
-    size_t dot = uri.find_last_of('.');
-    if (dot == std::string::npos) {
-        // 拡張子が無い → CGIじゃない
-        return false;
-    }
-
-    std::string ext = uri.substr(dot); // ".php" とか
+    std::string ext = getExtension(req.uri);
     return (ext == ".php"); // いまはPHPだけCGI扱い
 }
 

@@ -290,3 +290,20 @@ std::string ResponseBuilder::generateResponse(
     // TODO: 将来 cfg.allowedMethods (locationごと) からAllowを組み立てる
     return buildMethodNotAllowed("GET, HEAD, DELETE", cfg);
 }
+
+std::string ResponseBuilder::buildErrorResponseFromFile(
+    const std::string &filePath,
+    int statusCode,
+    bool close
+) const {
+    std::string body = slurpFile(filePath);
+    std::ostringstream res;
+    res << "HTTP/1.1 " << statusCode << " " << reasonPhrase(statusCode) << "\r\n"
+        << "Content-Type: text/html\r\n"
+        << "Content-Length: " << body.size() << "\r\n"
+        << "Connection: " << (close ? "close" : "keep-alive") << "\r\n"
+        << "Date: " << httpDate_() << "\r\n"
+        << "Server: webserv/0.1\r\n\r\n"
+        << body;
+    return res.str();
+}
