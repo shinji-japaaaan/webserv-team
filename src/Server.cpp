@@ -218,7 +218,7 @@ void Server::handleClient(int index) {
             handlePost(fd, req, loc);  // 通常のPOST処理
         } else {
             ResponseBuilder rb;
-            std::string response = rb.generateResponse(req, cfg);
+            std::string response = rb.generateResponse(req, cfg, loc);
             queueSend(fd, response);
         }
 

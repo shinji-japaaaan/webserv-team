@@ -195,7 +195,7 @@ std::string ResponseBuilder::buildSimpleResponse(
     const std::string &reason,
     bool close,
     const std::map<std::string, std::string> &extraHeaders
-) {
+) const {
     std::ostringstream res;
     res << "HTTP/1.1 " << statusCode << " " << reason << "\r\n";
     for (std::map<std::string,std::string>::const_iterator it = extraHeaders.begin();
@@ -214,15 +214,56 @@ std::string ResponseBuilder::buildSimpleResponse(
     int statusCode,
     const std::string &reason,
     bool close
-) {
+) const{
     std::map<std::string,std::string> dummy;
     return buildSimpleResponse(statusCode, reason, close, dummy);
+}
+
+std::string ResponseBuilder::buildErrorResponse(
+    const ServerConfig &cfg,
+    const ServerConfig::Location* loc,
+    int statusCode,
+    bool close
+) const {
+    std::string filePath;
+
+    // 1. Location にカスタムページがある場合
+    if (loc && loc->ret.count(statusCode)) {
+        filePath = loc->ret.at(statusCode);
+    }
+    // 2. サーバ全体にカスタムページがある場合
+    else if (cfg.errorPages.count(statusCode)) {
+        filePath = cfg.errorPages.at(statusCode);
+    }
+
+    // ファイルがあれば返す
+    if (!filePath.empty()) {
+        std::ifstream ifs(filePath.c_str(), std::ios::binary);
+        if (ifs.is_open()) {
+            std::ostringstream oss;
+            oss << ifs.rdbuf();
+            std::string body = oss.str();
+            std::ostringstream res;
+            res << "HTTP/1.1 " << statusCode << " " << reasonPhrase(statusCode) << "\r\n"
+                << "Content-Type: text/html\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Connection: " << (close ? "close" : "keep-alive") << "\r\n"
+                << "Date: " << httpDate_() << "\r\n"
+                << "Server: webserv/0.1\r\n\r\n"
+                << body;
+            return res.str();
+        }
+    }
+
+    // ファイルがなければ従来どおりシンプル版
+    return buildSimpleResponse(statusCode, reasonPhrase(statusCode), close); 
 }
 
 // GET / HEAD 処理
 std::string ResponseBuilder::handleGetLike(
     const Request &req,
-    const ServerConfig &cfg
+    const ServerConfig &cfg,
+    const ServerConfig::Location* loc
 ) {
     // ディレクトリトラバーサル対策
     if (isTraversal(req.uri)) {
@@ -233,9 +274,7 @@ std::string ResponseBuilder::handleGetLike(
     std::string absPath = resolvePathForGet(cfg.root, req.uri, isDirFlag);
 
     if (!isRegFs(absPath)) {
-        // カスタム404があればそれを返す、なければシンプル404
-        // いまはシンプル404（将来cfg.errorPages["404"]とか見てもいい）
-        return buildSimpleResponse(404, reasonPhrase(404), true);
+        return buildErrorResponse(cfg, loc, 404);
     }
 
     bool headOnly = (req.method == "HEAD");
@@ -245,7 +284,8 @@ std::string ResponseBuilder::handleGetLike(
 // DELETE 処理
 std::string ResponseBuilder::handleDelete(
     const Request &req,
-    const ServerConfig &cfg
+    const ServerConfig &cfg,
+    const ServerConfig::Location* loc
 ) {
     // トラバーサル対策
     if (isTraversal(req.uri)) {
@@ -256,7 +296,7 @@ std::string ResponseBuilder::handleDelete(
 
     // 対象が存在しないなら 404
     if (!isRegFs(absPath)) {
-        return buildSimpleResponse(404, reasonPhrase(404), true);
+        return buildErrorResponse(cfg, loc, 404);
     }
 
     // ファイル削除を試みる
@@ -276,14 +316,15 @@ std::string ResponseBuilder::handleDelete(
 // Server.cpp から呼ばれる
 std::string ResponseBuilder::generateResponse(
     const Request &req,
-    const ServerConfig &cfg
+    const ServerConfig &cfg,
+    const ServerConfig::Location* loc
 ) {
     // ここでメソッドごとの振り分けをする
     if (req.method == "GET" || req.method == "HEAD") {
-        return handleGetLike(req, cfg);
+        return handleGetLike(req, cfg, loc);
     }
     if (req.method == "DELETE") {
-        return handleDelete(req, cfg);
+        return handleDelete(req, cfg, loc);
     }
 
     // 許可されてないメソッドは405

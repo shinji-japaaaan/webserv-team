@@ -11,15 +11,18 @@ class ResponseBuilder {
 public:
     // ① ルータ: メソッドに応じて適切なハンドラを呼ぶ
     std::string generateResponse(const Request &req,
-                                 const ServerConfig &cfg);
+                                 const ServerConfig &cfg,
+                                 const ServerConfig::Location* loc);
 
     // ② GET / HEAD (静的ファイル返却)
     std::string handleGetLike(const Request &req,
-                              const ServerConfig &cfg);
+                              const ServerConfig &cfg,
+                              const ServerConfig::Location* loc);
 
     // ③ DELETE
     std::string handleDelete(const Request &req,
-                             const ServerConfig &cfg);
+                             const ServerConfig &cfg,
+                             const ServerConfig::Location* loc);
 
     // ④ 405 Method Not Allowed
     std::string buildMethodNotAllowed(const std::string &allow,
@@ -31,14 +34,14 @@ public:
         const std::string &reason,
         bool close,
         const std::map<std::string, std::string> &extraHeaders
-    );
+    ) const;
 
     // extraHeadersなし版
     std::string buildSimpleResponse(
         int statusCode,
         const std::string &reason,
         bool close
-    );
+    ) const;
 
     // すでに実装済みのはずのやつら（このヘッダで宣言してあるなら残してOK）
     std::string buildErrorResponse(int statusCode,
@@ -51,6 +54,8 @@ public:
     std::string buildErrorResponseFromFile(const std::string &filePath,
                                            int statusCode = 500,
                                            bool close = true) const;
+
+    std::string buildErrorResponse(const ServerConfig &cfg,const ServerConfig::Location* loc,int statusCode,bool close = true) const;
 
 private:
     // --- ヘルパ群 ---
