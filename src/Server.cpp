@@ -312,24 +312,41 @@ void Server::handleCgiOutput(int fd) {
 
     if (n == 0) { // EOF
         int clientFd = cgiMap[fd].clientFd;
-        
-        //-----リスポンス組み立て-----
-        std::string body = cgiMap[fd].buffer;
-        if (body.find("HTTP/") != 0) {
-            std::ostringstream oss;
-            oss << "HTTP/1.1 200 OK\r\n"
-                << "Content-Length: " << body.size() << "\r\n\r\n" << body;
-            body = oss.str();
-        }
-        //---------------------------
+        // 関数を呼んでHTTPレスポンスを生成
+        std::string response = buildHttpResponseFromCgi(cgiMap[fd].buffer);
         
         // クライアントへ送信キューに追加
-        queueSend(clientFd, body);
+        queueSend(clientFd, response);
         close(fd);
         waitpid(cgiMap[fd].pid, NULL, 0);
         cgiMap.erase(fd);
     }
 }
+
+std::string Server::buildHttpResponseFromCgi(const std::string &cgiOutput) {
+    // CGIヘッダと本文を分離
+    size_t headerEnd = cgiOutput.find("\r\n\r\n");
+    std::string headers, content;
+    if (headerEnd != std::string::npos) {
+        headers = cgiOutput.substr(0, headerEnd);      // CGIのヘッダ部分
+        content = cgiOutput.substr(headerEnd + 4);    // 本文部分
+    } else {
+        headers = "";
+        content = cgiOutput;
+    }
+
+    // HTTPレスポンス組み立て
+    std::ostringstream oss;
+    oss << "HTTP/1.1 200 OK\r\n";
+    oss << "Content-Length: " << content.size() << "\r\n";
+
+    if (!headers.empty()) oss << headers << "\r\n"; // CGIヘッダ追加
+    oss << "\r\n";                                   // ヘッダと本文を分ける
+    oss << content;                                  // 本文追加
+
+    return oss.str();
+}
+
 
 // ----------------------------
 // クライアント送信処理

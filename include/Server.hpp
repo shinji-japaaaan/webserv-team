@@ -85,6 +85,7 @@ private:
     bool isCgiRequest(const Request &req);               // CGI判定関数
     void startCgiProcess(int clientFd, const Request &req);          // CGI実行関数
     void handleCgiOutput(int outFd);                     // pollで読み取り可能になったCGI出力を処理
+    std::string buildHttpResponseFromCgi(const std::string &cgiOutput);
 
     const ServerConfig::Location* getLocationForUri(const std::string &uri) const;
 
