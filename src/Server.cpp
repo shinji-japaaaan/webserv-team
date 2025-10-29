@@ -165,43 +165,54 @@ void Server::handleClient(int index) {
     if (bytes <= 0) {
         handleDisconnect(fd, index, bytes);
         return;
-    } else {
-      buffer[bytes] = '\0';
-      clients[fd].recvBuffer.append(buffer);
-        while (true) {
-            std::string request =
-                extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
-            if (request.empty()) break;
+    }
 
-            printRequest(clients[fd].currentRequest);
-            printf("Request complete from fd=%d\n", fd);
+    buffer[bytes] = '\0';
+    clients[fd].recvBuffer.append(buffer);
 
-            std::string response;
+    while (true) {
+        // 1リクエスト分を抽出
+        std::string requestStr =
+            extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
+        if (requestStr.empty()) break;
 
-            Request &req = clients[fd].currentRequest;
-            bool isCgi = isCgiRequest(req);
+        Request &req = clients[fd].currentRequest;
 
-            if (isCgi) {
-                // ✅ CGIを非同期実行
+        const ServerConfig::Location* loc = getLocationForUri(req.uri);
+        printRequest(req);
+        printf("Request complete from fd=%d\n", fd);
+
+        if (isCgiRequest(req)) {
                 startCgiProcess(fd, req);
-            } else {
-				ResponseBuilder rb;
+        } else if (req.method == "POST") {
+            break;
+            // handlePost(fd, req, loc);
+        } else {
+            ResponseBuilder rb;
+            std::string response = rb.generateResponse(req, cfg, loc);
+            queueSend(fd, response);
+        }
 
-				// Server が保持する現在の設定を ServerConfig に詰めて渡す
-				ServerConfig cfg;
-				cfg.port = this->port;
-				cfg.host = this->host;
-				cfg.root = this->root;
-				cfg.errorPages = this->errorPages;
-				// ↑BさんのConfigParserが拡張されたら、ここでallowMethodsとかlocationも入れる想定
+        // このリクエスト分を recvBuffer から削除
+        clients[fd].recvBuffer.erase(0, requestStr.size());
+    }
+}
 
-				std::string response = rb.generateResponse(req, cfg);
-				queueSend(fd, response);
+const ServerConfig::Location* Server::getLocationForUri(const std::string &uri) const {
+    const ServerConfig::Location* bestMatch = NULL;
+    size_t longest = 0;
+
+    for (std::map<std::string, ServerConfig::Location>::const_iterator it =
+             cfg.location.begin(); it != cfg.location.end(); ++it) {
+        const std::string &path = it->first;
+        if (uri.compare(0, path.size(), path) == 0) { // prefix match
+            if (path.size() > longest) {
+                longest = path.size();
+                bestMatch = &(it->second);
             }
-            // このリクエスト分を削る（※二重eraseしない）
-            clients[fd].recvBuffer.erase(0, request.size());
         }
     }
+    return bestMatch;
 }
 
 bool Server::isCgiRequest(const Request &req) {

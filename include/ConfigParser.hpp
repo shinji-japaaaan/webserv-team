@@ -4,16 +4,6 @@
 #include <vector>
 #include <set>
 
-// struct Location {
-// 	std::string root;
-// 	std::string autoindex;
-// 	std::string upload_path;
-// 	std::string index;
-// 	int max_body_size;
-// 	std::string cgi_path;
-// 	std::map<int, std::string> ret;
-// };
-
 struct ServerConfig {
   int port;
 //   std::string server_name;

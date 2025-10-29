@@ -11,15 +11,18 @@ class ResponseBuilder {
 public:
     // ① ルータ: メソッドに応じて適切なハンドラを呼ぶ
     std::string generateResponse(const Request &req,
-                                 const ServerConfig &cfg);
+                                 const ServerConfig &cfg,
+                                 const ServerConfig::Location* loc);
 
     // ② GET / HEAD (静的ファイル返却)
     std::string handleGetLike(const Request &req,
-                              const ServerConfig &cfg);
+                              const ServerConfig &cfg,
+                              const ServerConfig::Location* loc);
 
     // ③ DELETE
     std::string handleDelete(const Request &req,
-                             const ServerConfig &cfg);
+                             const ServerConfig &cfg,
+                             const ServerConfig::Location* loc);
 
     // ④ 405 Method Not Allowed
     std::string buildMethodNotAllowed(const std::string &allow,

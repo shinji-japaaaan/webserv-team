@@ -16,6 +16,7 @@
 
 #include "ClientInfo.hpp"
 #include "RequestParser.hpp"
+#include "ConfigParser.hpp"
 
 #define MAX_CLIENTS 100
 
@@ -28,8 +29,9 @@ private:
     int serverFd;                 // listen用ソケット
     pollfd fds[MAX_CLIENTS];      // クライアントFD監視配列
     int nfds;                     // fdsの有効数
+    
+    ServerConfig cfg;             // サーバー設定
     int port;                     // 待ち受けポート番号
-
     std::string host;             // 追加: 待ち受けホストアドレス
     std::string root;             // 追加: ドキュメントルート
     std::map<int, std::string> errorPages; // 追加: エラーページ設定
@@ -83,6 +85,8 @@ private:
     bool isCgiRequest(const Request &req);               // CGI判定関数
     void startCgiProcess(int clientFd, const Request &req);          // CGI実行関数
     void handleCgiOutput(int outFd);                     // pollで読み取り可能になったCGI出力を処理
+
+    const ServerConfig::Location* getLocationForUri(const std::string &uri) const;
 
 public:
     // -----------------------------
