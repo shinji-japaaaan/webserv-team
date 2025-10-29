@@ -8,6 +8,7 @@ struct ClientInfo {
     std::string recvBuffer;    // 受信バッファ
     std::string sendBuffer;    // 送信バッファ
     bool requestComplete;      // リクエスト受信完了フラグ
+	bool shouldClose;  // レスポンス送信後に接続を閉じる必要がある場合に true
 	Request currentRequest;
     bool shouldClose;         // 送信後に接続を閉じるフラグ
 

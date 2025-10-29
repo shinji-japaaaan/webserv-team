@@ -5,6 +5,7 @@
 #include "resp/ResponseBuilder.hpp" 
 #include <sstream> 
 #include <sys/wait.h>
+#include <climits>
 
 // ----------------------------
 // コンストラクタ・デストラクタ
@@ -12,21 +13,19 @@
 
 // サーバー初期化（ポート指定）
 Server::Server(const ServerConfig &config)
-: cfg(config),
-  port(config.port),
-  host(config.host),
-  root(config.root),
-  errorPages(config.errorPages)
+    : serverFd(-1),
+      nfds(1),
+      cfg(config),
+      clientMaxBodySize(SIZE_MAX)
 {
-    // serverブロックで max_body_size が指定されていれば採用
     if (config.max_body_size > 0) {
         clientMaxBodySize = config.max_body_size;
-    } else {
-        // 無制限
-        clientMaxBodySize = SIZE_MAX;
     }
+	// ★ここ大事：他の箇所で使うのでメンバにも入れておく
+    host = config.host;
+    root = config.root;
+    errorPages = config.errorPages;
 }
-
 
 // サーバー破棄（全クライアントFDクローズ）
 Server::~Server() {
@@ -51,7 +50,7 @@ bool Server::init() {
     fds[0].fd = serverFd;
     fds[0].events = POLLIN;
 
-    std::cout << "Server listening on port " << port << std::endl;
+    std::cout << "Server listening on port " << cfg.port << std::endl;
     return true;
 }
 
@@ -91,7 +90,7 @@ bool Server::createSocket() {
 bool Server::bindAndListen() {
     sockaddr_in addr;
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
+    addr.sin_port = htons(cfg.port);
     addr.sin_addr.s_addr = inet_addr(host.c_str());
 
     if (addr.sin_addr.s_addr == INADDR_NONE) {
@@ -166,6 +165,58 @@ int Server::acceptClient() {
     return clientFd;
 }
 
+// URIに最長一致するLocationを返す。なければNULL
+Server::LocationMatch Server::getLocationForUri(const std::string &uri) const {
+    LocationMatch bestMatch;
+    size_t bestLen = 0;
+
+    for (std::map<std::string, ServerConfig::Location>::const_iterator it = cfg.location.begin();
+         it != cfg.location.end(); ++it)
+    {
+        const std::string &locPath = it->first;
+        if (uri.compare(0, locPath.size(), locPath) == 0) {
+            if (locPath.size() > bestLen) {
+                bestLen = locPath.size();
+                bestMatch.loc  = &it->second;
+                bestMatch.path = locPath;
+            }
+        }
+    }
+    return bestMatch;
+}
+
+bool Server::isMethodAllowed(const std::string &method,
+                             const ServerConfig::Location *loc) const {
+    // locが無いなら、とりあえず全許可扱いにしないほうが安全だけど
+    // まずは「loc指定なし→制限なし」という挙動でいく
+    if (!loc) return true;
+
+    // locationにmethodディレクティブが無ければ制限なし
+    if (loc->method.empty()) return true;
+
+    // その中にこのmethodが含まれているか？
+    for (size_t i = 0; i < loc->method.size(); ++i) {
+        if (loc->method[i] == method) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string Server::buildAllowHeader(const ServerConfig::Location *loc) const {
+    // Allowヘッダ用に "GET, HEAD, DELETE" みたいな文字列を返す
+    if (!loc || loc->method.empty()) {
+        // locationに指定がなければサーバ側のデフォ想定
+        return "GET, HEAD, DELETE";
+    }
+    std::string allow;
+    for (size_t i = 0; i < loc->method.size(); ++i) {
+        if (i) allow += ", ";
+        allow += loc->method[i];
+    }
+    return allow;
+}
+
 // ----------------------------
 // クライアント受信処理
 // ----------------------------
@@ -175,74 +226,62 @@ void Server::handleClient(int index) {
     int fd = fds[index].fd;
     int bytes = recv(fd, buffer, sizeof(buffer) - 1, 0);
 
+    // 🔸 クライアント切断・エラー処理
     if (bytes <= 0) {
         handleDisconnect(fd, index, bytes);
         return;
     }
 
+    // 🔸 受信データをバッファに追加
     buffer[bytes] = '\0';
     clients[fd].recvBuffer.append(buffer);
 
     while (true) {
-        // 1リクエスト分を抽出
-        std::string requestStr =
+        // 🔸 1リクエスト分を抽出
+        std::string rawReq =
             extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
-        if (requestStr.empty()) break;
+        if (rawReq.empty())
+            break;
 
         Request &req = clients[fd].currentRequest;
+        printRequest(req);
 
-        // Locationごとの max_body_size を取得（デフォルトは server の設定）
-        size_t maxSize = clientMaxBodySize; // serverデフォルト
-        const ServerConfig::Location* loc = getLocationForUri(req.uri);
-        if (loc && loc->max_body_size > 0) {
-            maxSize = loc->max_body_size; // Location の値で上書き
-        }
+        // 🔸 1. Locationマッチング
+        LocationMatch m = getLocationForUri(req.uri);
+        const ServerConfig::Location *loc = m.loc;
+        const std::string &locPath = m.path;
 
-        // ボディサイズのみをチェック
-        if (maxSize != SIZE_MAX &&
-            req.body.size() > maxSize) {
-            sendPayloadTooLarge(fd);
+        // 🔸 2. ボディサイズ制限（Location優先）
+        size_t maxAllowed = clientMaxBodySize;
+        if (loc && loc->max_body_size > 0)
+            maxAllowed = loc->max_body_size;
+
+        if (req.body.size() > maxAllowed) {
+            ResponseBuilder rb;
+            std::string resp = rb.buildSimpleResponse(413, "Payload Too Large", true);
+            queueSend(fd, resp);
             clients[fd].shouldClose = true;
-            // このリクエストを処理せず終了
-            clients[fd].recvBuffer.erase(0, requestStr.size());
+            clients[fd].recvBuffer.erase(0, rawReq.size());
             break;
         }
 
-        printRequest(req);
-        printf("Request complete from fd=%d\n", fd);
+        // 🔸 3. CGI判定（Location内だけ）
+        bool cgi = (loc && !loc->cgi_path.empty() && isCgiRequest(req));
 
-        if(loc && !loc->cgi_path.empty() && isCgiRequest(req)) {
-            // CGIはLocationの中だけで実行
+        if (cgi) {
             startCgiProcess(fd, req);
         } else if (req.method == "POST") {
-            handlePost(fd, req, loc);  // 通常のPOST処理
+            handlePost(fd, req, loc);
         } else {
+            // 🔸 4. 通常レスポンス（locPath を渡す！）
             ResponseBuilder rb;
-            std::string response = rb.generateResponse(req, cfg, loc);
-            queueSend(fd, response);
+            std::string resp = rb.generateResponse(req, cfg, loc, locPath);
+            queueSend(fd, resp);
         }
 
-        // このリクエスト分を recvBuffer から削除
-        clients[fd].recvBuffer.erase(0, requestStr.size());
+        // 🔸 5. 消費済みリクエストを削除
+        clients[fd].recvBuffer.erase(0, rawReq.size());
     }
-}
-
-
-const ServerConfig::Location* Server::getLocationForUri(const std::string &uri) const {
-    const ServerConfig::Location* bestMatch = NULL;
-    size_t longest = 0;
-
-    for (std::map<std::string, ServerConfig::Location>::const_iterator it =
-             cfg.location.begin(); it != cfg.location.end(); ++it) {
-        const std::string &path = it->first;
-        if (uri.compare(0, path.size(), path) == 0) { // prefix match
-            if (path.size() > longest) {
-                longest = path.size();
-                bestMatch = &(it->second);
-            }
-        }
-    }
-    return bestMatch;
 }
 
 void Server::sendPayloadTooLarge(int fd) {

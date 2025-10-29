@@ -9,6 +9,34 @@
 #include <cerrno>
 #include <map>
 
+// ====== 便利関数======
+static bool isMethodAllowed(const std::string &m,
+                            const ServerConfig::Location *loc)
+{
+    if (!loc) return true; // Locationが無いなら全許可とみなす
+    if (loc->method.empty()) return true; // 空なら全許可
+
+    for (size_t i = 0; i < loc->method.size(); ++i) {
+        if (loc->method[i] == m)
+            return true;
+    }
+    return false;
+}
+
+static std::string buildAllowHeader(const ServerConfig::Location *loc) {
+    if (!loc || loc->method.empty()) {
+        // デフォルトは3メソッド全部
+        return "GET, HEAD, DELETE";
+    }
+    // loc->method を ", " で結合
+    std::ostringstream oss;
+    for (size_t i = 0; i < loc->method.size(); ++i) {
+        if (i) oss << ", ";
+        oss << loc->method[i];
+    }
+    return oss.str();
+}
+
 // ====== ローカルヘルパ ======
 
 static bool isDirFs(const std::string& p){
@@ -59,6 +87,63 @@ static std::string reasonPhrase(int code) {
         case 500: return "Internal Server Error";
     }
     return "Unknown";
+}
+
+// cfg.root と loc->root をマージして「最終的に使うルートディレクトリ」を決める。
+// ルール:
+//  - loc が無い→ cfg.root を返す
+//  - loc->root が空→ cfg.root を返す
+//  - loc->root が '/' で始まる → プロセスカレント直下扱い (ex: "/upload/" → "./upload/")
+//  - それ以外 → cfg.root と連結 (ex: cfg.root="./docs/", loc->root="img/" → "./docs/img/")
+std::string ResponseBuilder::mergeRoots(
+    const ServerConfig &cfg,
+    const ServerConfig::Location *loc
+) const {
+    if (!loc || loc->root.empty()) {
+        return cfg.root;
+    }
+
+    const std::string &lr = loc->root;
+
+    // case1: 絶対っぽい書き方 → プロジェクト直下フォルダ扱い
+    if (!lr.empty() && lr[0] == '/') {
+        // "/upload/" -> "./upload/"
+        std::string trimmed = lr;
+        // 先頭の'/'を削る
+        while (!trimmed.empty() && trimmed[0] == '/')
+            trimmed.erase(0, 1);
+        // "./" を頭につける
+        return std::string("./") + trimmed;
+    }
+
+    // case2: 相対 → サーバrootにぶら下げる
+    // joinPathは既にstaticヘルパとして定義済み
+    return joinPath(cfg.root, lr);
+}
+
+// URIからlocationのマウントパスを剥がして、ローカルでの相対パスにする.
+// 例: uri="/delete/test_delete.html", locPath="/delete/"
+// → "test_delete.html"
+// locPathが空なら、先頭の'/'を落としただけのパスにする
+std::string ResponseBuilder::stripLocationPrefix(
+    const std::string &uri,
+    const std::string &locPath
+) const {
+    if (!locPath.empty() &&
+        uri.compare(0, locPath.size(), locPath) == 0)
+    {
+        std::string rest = uri.substr(locPath.size());
+        // 先頭の'/'が二重にならないよう軽く整える
+        while (!rest.empty() && rest[0] == '/')
+            rest.erase(0,1);
+        return rest;
+    }
+
+    // fallback: "/"を外して相対に
+    std::string tmp = uri;
+    while (!tmp.empty() && tmp[0] == '/')
+        tmp.erase(0,1);
+    return tmp;
 }
 
 // ====== ResponseBuilder メンバ ======
@@ -260,56 +345,28 @@ std::string ResponseBuilder::buildErrorResponse(
 }
 
 // GET / HEAD 処理
-std::string ResponseBuilder::handleGetLike(
+// --- エントリーポイント ---
+std::string ResponseBuilder::generateResponse(
     const Request &req,
     const ServerConfig &cfg,
-    const ServerConfig::Location* loc
+    const ServerConfig::Location *loc,
+    const std::string &locPath
 ) {
-    // ディレクトリトラバーサル対策
-    if (isTraversal(req.uri)) {
-        return buildSimpleResponse(403, reasonPhrase(403), true);
+    // 1. メソッド許可チェック
+    if (!isMethodAllowed(req.method, loc)) {
+        return buildMethodNotAllowed(buildAllowHeader(loc), cfg);
     }
 
-    bool isDirFlag = false;
-    std::string absPath = resolvePathForGet(cfg.root, req.uri, isDirFlag);
-
-    if (!isRegFs(absPath)) {
-        return buildErrorResponse(cfg, loc, 404);
+    // 2. メソッド別ディスパッチ
+    if (req.method == "GET" || req.method == "HEAD") {
+        return handleGetLike(req, cfg, loc, locPath);
+    }
+    if (req.method == "DELETE") {
+        return handleDelete(req, cfg, loc, locPath);
     }
 
-    bool headOnly = (req.method == "HEAD");
-    return buildOkResponseFromFile(absPath, headOnly, true);
-}
-
-// DELETE 処理
-std::string ResponseBuilder::handleDelete(
-    const Request &req,
-    const ServerConfig &cfg,
-    const ServerConfig::Location* loc
-) {
-    // トラバーサル対策
-    if (isTraversal(req.uri)) {
-        return buildSimpleResponse(403, reasonPhrase(403), true);
-    }
-
-    std::string absPath = resolvePathForDelete(cfg.root, req.uri);
-
-    // 対象が存在しないなら 404
-    if (!isRegFs(absPath)) {
-        return buildErrorResponse(cfg, loc, 404);
-    }
-
-    // ファイル削除を試みる
-    if (unlink(absPath.c_str()) == 0) {
-        // 成功 → 204 No Content
-        return buildSimpleResponse(204, reasonPhrase(204), true);
-    } else {
-        // 失敗。権限なさそうなら403、それ以外は500でもいい
-        if (errno == EACCES || errno == EPERM) {
-            return buildSimpleResponse(403, reasonPhrase(403), true);
-        }
-        return buildSimpleResponse(500, reasonPhrase(500), true);
-    }
+    // 未サポートメソッドは405
+    return buildMethodNotAllowed(buildAllowHeader(loc), cfg);
 }
 
 // --- エントリーポイント ---
@@ -317,34 +374,23 @@ std::string ResponseBuilder::handleDelete(
 std::string ResponseBuilder::generateResponse(
     const Request &req,
     const ServerConfig &cfg,
-    const ServerConfig::Location* loc
-) {
-    // ここでメソッドごとの振り分けをする
+	const ServerConfig::Location *loc,
+    const std::string &locPath
+)
+{
+    // 1. メソッド許可チェック
+    if (!isMethodAllowed(req.method, loc)) {
+        return buildMethodNotAllowed(buildAllowHeader(loc), cfg);
+    }
+
+    // 2. メソッド別ディスパッチ
     if (req.method == "GET" || req.method == "HEAD") {
-        return handleGetLike(req, cfg, loc);
+        return handleGetLike(req, cfg, loc, locPath);
     }
     if (req.method == "DELETE") {
-        return handleDelete(req, cfg, loc);
+        return handleDelete(req, cfg, loc, locPath);
     }
 
-    // 許可されてないメソッドは405
-    // TODO: 将来 cfg.allowedMethods (locationごと) からAllowを組み立てる
-    return buildMethodNotAllowed("GET, HEAD, DELETE", cfg);
-}
-
-std::string ResponseBuilder::buildErrorResponseFromFile(
-    const std::string &filePath,
-    int statusCode,
-    bool close
-) const {
-    std::string body = slurpFile(filePath);
-    std::ostringstream res;
-    res << "HTTP/1.1 " << statusCode << " " << reasonPhrase(statusCode) << "\r\n"
-        << "Content-Type: text/html\r\n"
-        << "Content-Length: " << body.size() << "\r\n"
-        << "Connection: " << (close ? "close" : "keep-alive") << "\r\n"
-        << "Date: " << httpDate_() << "\r\n"
-        << "Server: webserv/0.1\r\n\r\n"
-        << body;
-    return res.str();
+    // 未サポートメソッドは405
+    return buildMethodNotAllowed(buildAllowHeader(loc), cfg);
 }

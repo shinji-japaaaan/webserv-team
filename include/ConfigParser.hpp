@@ -16,11 +16,11 @@
 
 struct ServerConfig {
   int port;
-//   std::string server_name;
   std::string host;
   std::string root;
   int max_body_size;
   std::map<int, std::string> errorPages;
+
   struct Location {
     std::string root;
     std::string autoindex;
@@ -28,9 +28,10 @@ struct ServerConfig {
     std::string index;
     int max_body_size;
     std::string cgi_path;
-	std::vector<std::string> method;
+    std::vector<std::string> method;
     std::map<int, std::string> ret;
   };
+
   std::map<std::string, Location> location;
 };
 
