@@ -330,24 +330,41 @@ std::string Server::buildHttpResponseFromCgi(const std::string &cgiOutput) {
     size_t headerEnd = cgiOutput.find("\r\n\r\n");
     std::string headers, content;
     if (headerEnd != std::string::npos) {
-        headers = cgiOutput.substr(0, headerEnd);      // CGIのヘッダ部分
-        content = cgiOutput.substr(headerEnd + 4);    // 本文部分
+        headers = cgiOutput.substr(0, headerEnd);
+        content = cgiOutput.substr(headerEnd + 4);
     } else {
-        headers = "";
-        content = cgiOutput;
+        headers = cgiOutput;
     }
 
-    // HTTPレスポンス組み立て
-    std::ostringstream oss;
-    oss << "HTTP/1.1 200 OK\r\n";
-    oss << "Content-Length: " << content.size() << "\r\n";
+    // --- Statusヘッダを探す ---
+    std::string statusLine = "HTTP/1.1 200 OK"; // デフォルト
+    size_t statusPos = headers.find("Status:");
+    if (statusPos != std::string::npos) {
+        size_t lineEnd = headers.find("\r\n", statusPos);
+        std::string statusValue = headers.substr(
+            statusPos + 7, lineEnd - (statusPos + 7));
+        // 前後の空白除去
+        size_t start = statusValue.find_first_not_of(" \t");
+        size_t end = statusValue.find_last_not_of(" \t");
+        if (start != std::string::npos && end != std::string::npos)
+            statusValue = statusValue.substr(start, end - start + 1);
+        statusLine = "HTTP/1.1 " + statusValue;
+        // "Status:" 行はHTTPレスポンスヘッダには不要なので削除
+        headers.erase(statusPos, lineEnd - statusPos + 2);
+    }
 
-    if (!headers.empty()) oss << headers << "\r\n"; // CGIヘッダ追加
-    oss << "\r\n";                                   // ヘッダと本文を分ける
-    oss << content;                                  // 本文追加
+    // --- HTTPレスポンスを組み立て ---
+    std::ostringstream oss;
+    oss << statusLine << "\r\n";
+    oss << "Content-Length: " << content.size() << "\r\n";
+    if (!headers.empty())
+        oss << headers << "\r\n";
+    oss << "\r\n";
+    oss << content;
 
     return oss.str();
 }
+
 
 
 // ----------------------------
