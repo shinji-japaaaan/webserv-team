@@ -48,6 +48,9 @@ private:
         int clientFd; // ←追加: このCGIリクエストのクライアントFD
         Request req;
         std::string buffer;          // ←追加: CGI出力を一時的に蓄積
+        int elapsedLoops; // poll ループ数タイムアウト用
+        bool activeInLastPoll;
+        time_t startTime;  // CGIプロセス開始時刻
 };
     std::map<int, CgiProcess> cgiMap; // key: outFd, value: 管理情報
 
@@ -88,6 +91,7 @@ private:
     std::string buildHttpResponseFromCgi(const std::string &cgiOutput);
 
     const ServerConfig::Location* getLocationForUri(const std::string &uri) const;
+    void sendGatewayTimeout(int clientFd);
 
 public:
     // -----------------------------
@@ -109,6 +113,7 @@ public:
     void onPollEvent(int fd, short revents);
 
     std::vector<int> getCgiFds() const;                 // 現在監視中のCGI出力FDリスト
+    void checkCgiTimeouts(int maxLoops);  
 };
 
 #endif

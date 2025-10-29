@@ -298,6 +298,8 @@ void Server::startCgiProcess(int clientFd, const Request &req) {
     proc.clientFd = clientFd;
     proc.pid = pid;
     proc.outFd = outPipe[0];
+    proc.elapsedLoops = 0;
+    proc.startTime = time(NULL);
     cgiMap[outPipe[0]] = proc;
 }
 
@@ -497,5 +499,6 @@ int Server::findIndexByFd(int fd) {
     }
     return -1;
 }
+
 
 
