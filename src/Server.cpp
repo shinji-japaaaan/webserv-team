@@ -4,6 +4,7 @@
 #include "resp/ResponseBuilder.hpp" 
 #include <sstream> 
 #include <sys/wait.h>
+#include <utility>
 
 // ----------------------------
 // コンストラクタ・デストラクタ
@@ -179,7 +180,7 @@ void Server::handleClient(int index) {
         Request &req = clients[fd].currentRequest;
 
         const ServerConfig::Location* loc = getLocationForUri(req.uri);
-        printRequest(req);
+        // printRequest(req);
         printf("Request complete from fd=%d\n", fd);
 
         if (isCgiRequest(req)) {
@@ -238,6 +239,15 @@ bool Server::isCgiRequest(const Request &req) {
 // CGI実行用関数
 // ----------------------------
 
+std::pair<std::string, std::string> splitUri(const std::string& uri) {
+    size_t pos = uri.find('?');
+    if (pos == std::string::npos) {
+        return std::make_pair(uri, "");
+    } else {
+        return std::make_pair(uri.substr(0, pos), uri.substr(pos + 1));
+    }
+}
+
 void Server::startCgiProcess(int clientFd, const Request &req) {
     int inPipe[2], outPipe[2];
     if (pipe(inPipe) < 0 || pipe(outPipe) < 0) return;
@@ -251,8 +261,15 @@ void Server::startCgiProcess(int clientFd, const Request &req) {
         std::ostringstream len;
         len << req.body.size();
         setenv("CONTENT_LENGTH", len.str().c_str(), 1);
-        std::string scriptPath = root + req.uri;  // 例: /var/www/html/test.php
+        // URI 分割
+        std::pair<std::string, std::string> parts = splitUri(req.uri);
+        std::string path_only = parts.first;   // /cgi-bin/test_get.php
+        std::string query_str = parts.second;  // name=chatgpt&lang=ja
+        // SCRIPT_FILENAME 設定
+        std::string scriptPath = root + path_only;
         setenv("SCRIPT_FILENAME", scriptPath.c_str(), 1);
+        // QUERY_STRING 設定
+        setenv("QUERY_STRING", query_str.c_str(), 1);
         setenv("REDIRECT_STATUS", "200", 1);
         char *argv[] = { (char*)"php-cgi", NULL };
         execve("/usr/bin/php-cgi", argv, environ);

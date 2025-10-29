@@ -67,7 +67,7 @@ ConfigParser::getServerConfigs(const std::string &path) {
     throw std::runtime_error("Invalid Configuration File - not close {}");
   }
   file.close();
-  print_configServers(); // for test　後で消す
+  // print_configServers(); // for test　後で消す
   return _serverConfigs;
 }
 
@@ -197,49 +197,49 @@ void ConfigParser::init_ServerConfig() {
   _cfg.errorPages.clear();
 }
 
-void ConfigParser::print_configServers() {
-  std::cout << "==== PRINT CONFIG PARSER FOR TEST (提出時は消す) ==="
-            << std::endl;
-  for (size_t i = 0; i < _serverConfigs.size(); ++i) {
-    const ServerConfig &server = _serverConfigs[i];
-    std::cout << "=== Server " << i + 1 << " ===" << std::endl;
-    std::cout << "Host: " << server.host << std::endl;
-    std::cout << "Port: " << server.port << std::endl;
-    std::cout << "Root: " << server.root << std::endl;
+// void ConfigParser::print_configServers() {
+//   std::cout << "==== PRINT CONFIG PARSER FOR TEST (提出時は消す) ==="
+//             << std::endl;
+//   for (size_t i = 0; i < _serverConfigs.size(); ++i) {
+//     const ServerConfig &server = _serverConfigs[i];
+//     std::cout << "=== Server " << i + 1 << " ===" << std::endl;
+//     std::cout << "Host: " << server.host << std::endl;
+//     std::cout << "Port: " << server.port << std::endl;
+//     std::cout << "Root: " << server.root << std::endl;
 
-    // エラーページ
-    std::cout << "Error pages:" << std::endl;
-    for (std::map<int, std::string>::const_iterator it =
-             server.errorPages.begin();
-         it != server.errorPages.end(); ++it) {
-      std::cout << "  " << it->first << " -> " << it->second << std::endl;
-    }
+//     // エラーページ
+//     std::cout << "Error pages:" << std::endl;
+//     for (std::map<int, std::string>::const_iterator it =
+//              server.errorPages.begin();
+//          it != server.errorPages.end(); ++it) {
+//       std::cout << "  " << it->first << " -> " << it->second << std::endl;
+//     }
 
-    // ロケーション
-    std::cout << "Locations:" << std::endl;
-    for (std::map<std::string, ServerConfig::Location>::const_iterator it =
-             server.location.begin();
-         it != server.location.end(); ++it) {
-      const std::string &path = it->first;
-      const ServerConfig::Location &loc = it->second;
-      std::cout << "- Path: " << path << std::endl;
-      std::cout << "  Root: " << loc.root << std::endl;
-      std::cout << "  Autoindex: " << loc.autoindex << std::endl;
-      std::cout << "  Upload path: " << loc.upload_path << std::endl;
-      std::cout << "  Index: " << loc.index << std::endl;
-      std::cout << "  Max body size: " << loc.max_body_size << std::endl;
-      std::cout << "  CGI path: " << loc.cgi_path << std::endl;
+//     // ロケーション
+//     std::cout << "Locations:" << std::endl;
+//     for (std::map<std::string, ServerConfig::Location>::const_iterator it =
+//              server.location.begin();
+//          it != server.location.end(); ++it) {
+//       const std::string &path = it->first;
+//       const ServerConfig::Location &loc = it->second;
+//       std::cout << "- Path: " << path << std::endl;
+//       std::cout << "  Root: " << loc.root << std::endl;
+//       std::cout << "  Autoindex: " << loc.autoindex << std::endl;
+//       std::cout << "  Upload path: " << loc.upload_path << std::endl;
+//       std::cout << "  Index: " << loc.index << std::endl;
+//       std::cout << "  Max body size: " << loc.max_body_size << std::endl;
+//       std::cout << "  CGI path: " << loc.cgi_path << std::endl;
 
-      if (!loc.ret.empty()) {
-        std::cout << "  Ret redirects:" << std::endl;
-        for (std::map<int, std::string>::const_iterator rit = loc.ret.begin();
-             rit != loc.ret.end(); ++rit) {
-          std::cout << "    " << rit->first << " -> " << rit->second
-                    << std::endl;
-        }
-      }
-    }
+//       if (!loc.ret.empty()) {
+//         std::cout << "  Ret redirects:" << std::endl;
+//         for (std::map<int, std::string>::const_iterator rit = loc.ret.begin();
+//              rit != loc.ret.end(); ++rit) {
+//           std::cout << "    " << rit->first << " -> " << rit->second
+//                     << std::endl;
+//         }
+//       }
+//     }
 
-    std::cout << std::endl;
-  }
-}
+//     std::cout << std::endl;
+//   }
+// }

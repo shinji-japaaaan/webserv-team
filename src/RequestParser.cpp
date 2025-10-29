@@ -98,17 +98,17 @@ Request RequestParser::parse(const std::string &buffer) {
   return req;
 }
 
-void printRequest(const Request &req) {
-  std::cout << "=== Request ===" << std::endl;
-  std::cout << "Method: " << req.method << std::endl;
-  std::cout << "URI: " << req.uri << std::endl;
+// void printRequest(const Request &req) {
+//   std::cout << "=== Request ===" << std::endl;
+//   std::cout << "Method: " << req.method << std::endl;
+//   std::cout << "URI: " << req.uri << std::endl;
 
-  std::cout << "Headers:" << std::endl;
-  std::map<std::string, std::string>::const_iterator it;
-  for (it = req.headers.begin(); it != req.headers.end(); ++it) {
-    std::cout << "  " << it->first << ": " << it->second << std::endl;
-  }
+//   std::cout << "Headers:" << std::endl;
+//   std::map<std::string, std::string>::const_iterator it;
+//   for (it = req.headers.begin(); it != req.headers.end(); ++it) {
+//     std::cout << "  " << it->first << ": " << it->second << std::endl;
+//   }
 
-  std::cout << "Body: " << req.body << std::endl;
-  std::cout << "================" << std::endl;
-}
+//   std::cout << "Body: " << req.body << std::endl;
+//   std::cout << "================" << std::endl;
+// }

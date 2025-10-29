@@ -36,7 +36,7 @@ private:
   std::vector<std::string> parse_by_space(const std::string &str);
   void parse_server_inside(const std::string &str);
   void init_ServerConfig();
-  void print_configServers();
+  // void print_configServers();
 //   void printLocation(const Location &loc);
   void printLocation(const ServerConfig::Location &loc);
   bool is_necessary_item();
