@@ -17,7 +17,7 @@ struct ServerConfig {
     std::string index;
     int max_body_size;
     std::string cgi_path;
-	std::vector<std::string> method;
+	  std::vector<std::string> method;
     std::map<int, std::string> ret;
   };
   std::map<std::string, Location> location;

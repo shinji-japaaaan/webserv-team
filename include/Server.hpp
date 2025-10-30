@@ -72,6 +72,8 @@ private:
     // -----------------------------
     void handleClient(int index);
     std::string extractNextRequest(std::string &recvBuffer, Request &currentRequest);
+    bool isMethodAllowed(const std::string &method,
+                         const ServerConfig::Location *loc);
 
     // -----------------------------
     // クライアント送信処理

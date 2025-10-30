@@ -182,6 +182,17 @@ void Server::handleClient(int index) {
         // printRequest(req);
         printf("Request complete from fd=%d\n", fd);
 
+        // 🔹 メソッド許可チェック追加
+        if (!isMethodAllowed(req.method, loc)) {
+            std::string res =
+                "HTTP/1.1 405 Method Not Allowed\r\n"
+                "Content-Length: 0\r\n\r\n";
+            queueSend(fd, res);
+            clients[fd].recvBuffer.erase(0, requestStr.size());
+            continue;
+        }
+
+
         if (isCgiRequest(req)) {
                 startCgiProcess(fd, req, *loc);
         } else if (req.method == "POST") {
@@ -196,6 +207,15 @@ void Server::handleClient(int index) {
         // このリクエスト分を recvBuffer から削除
         clients[fd].recvBuffer.erase(0, requestStr.size());
     }
+}
+
+bool Server::isMethodAllowed(const std::string &method,
+                             const ServerConfig::Location *loc) {
+    if (!loc) return false;
+    for (size_t i = 0; i < loc->method.size(); i++) {
+        if (loc->method[i] == method) return true;
+    }
+    return false;
 }
 
 const ServerConfig::Location* Server::getLocationForUri(const std::string &uri) const {
