@@ -101,6 +101,8 @@ private:
     Server::LocationMatch getLocationForUri(const std::string &uri) const;
     void sendGatewayTimeout(int clientFd);
 
+    void handlePost(int fd, Request &req, const ServerConfig::Location* loc);
+
 public:
     // -----------------------------
     // コンストラクタ / デストラクタ
