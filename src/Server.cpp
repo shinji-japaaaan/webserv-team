@@ -217,6 +217,10 @@ const ServerConfig::Location* Server::getLocationForUri(const std::string &uri) 
 }
 
 bool Server::isCgiRequest(const Request &req) {
+
+     // パーサー未実装 → loc に書き込まず、直接比較文字列を使用
+    const std::string cgiExt = ".php";
+
     // 1. クエリストリングを落とす (/foo.php?x=1 -> /foo.php)
     std::string uri = req.uri;
     size_t q = uri.find('?');
@@ -232,7 +236,7 @@ bool Server::isCgiRequest(const Request &req) {
     }
 
     std::string ext = uri.substr(dot); // ".php" とか
-    return (ext == ".php"); // いまはPHPだけCGI扱い
+    return (ext == cgiExt); // いまはPHPだけCGI扱い
 }
 
 // ----------------------------
