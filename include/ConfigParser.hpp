@@ -1,12 +1,12 @@
 #pragma once
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
-#include <set>
 
 struct ServerConfig {
   int port;
-//   std::string server_name;
+  //   std::string server_name;
   std::string host;
   std::string root;
   std::map<int, std::string> errorPages;
@@ -40,6 +40,8 @@ private:
 //   void printLocation(const Location &loc);
   void printLocation(const ServerConfig::Location &loc);
   bool is_necessary_item();
+  bool is_duplicate_item(std::string nest, std::string item,
+                                       ServerConfig::Location *loc);
 
 public:
   //   void parse(const std::string &path);
