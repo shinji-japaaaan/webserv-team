@@ -16,6 +16,7 @@
 
 #include "ClientInfo.hpp"
 #include "RequestParser.hpp"
+#include "ConfigParser.hpp"
 
 #define MAX_CLIENTS 100
 
@@ -25,11 +26,11 @@ private:
     // -----------------------------
     // メンバ変数
     // -----------------------------
+    ServerConfig cfg;             // サーバー設定
     int serverFd;                 // listen用ソケット
     pollfd fds[MAX_CLIENTS];      // クライアントFD監視配列
     int nfds;                     // fdsの有効数
     int port;                     // 待ち受けポート番号
-
     std::string host;             // 追加: 待ち受けホストアドレス
     std::string root;             // 追加: ドキュメントルート
     std::map<int, std::string> errorPages; // 追加: エラーページ設定
@@ -46,6 +47,9 @@ private:
         int clientFd; // ←追加: このCGIリクエストのクライアントFD
         Request req;
         std::string buffer;          // ←追加: CGI出力を一時的に蓄積
+        int elapsedLoops; // poll ループ数タイムアウト用
+        bool activeInLastPoll;
+        time_t startTime;  // CGIプロセス開始時刻
 };
     std::map<int, CgiProcess> cgiMap; // key: outFd, value: 管理情報
 
@@ -68,6 +72,8 @@ private:
     // -----------------------------
     void handleClient(int index);
     std::string extractNextRequest(std::string &recvBuffer, Request &currentRequest);
+    bool isMethodAllowed(const std::string &method,
+                         const ServerConfig::Location *loc);
 
     // -----------------------------
     // クライアント送信処理
@@ -81,15 +87,18 @@ private:
     // ここから追加：CGI対応用
     // -----------------------------
     bool isCgiRequest(const Request &req);               // CGI判定関数
-    void startCgiProcess(int clientFd, const Request &req);          // CGI実行関数
+    void startCgiProcess(int clientFd, const Request &req, const ServerConfig::Location &loc);          // CGI実行関数
     void handleCgiOutput(int outFd);                     // pollで読み取り可能になったCGI出力を処理
+    std::string buildHttpResponseFromCgi(const std::string &cgiOutput);
+
+    const ServerConfig::Location* getLocationForUri(const std::string &uri) const;
+    void sendGatewayTimeout(int clientFd);
 
 public:
     // -----------------------------
     // コンストラクタ / デストラクタ
     // -----------------------------
-    Server(int port, const std::string &host, const std::string &root,
-           const std::map<int, std::string> &errorPages); // 追加: 新形式
+    Server(const ServerConfig& cfg);
     ~Server();
 
     // -----------------------------
@@ -104,6 +113,7 @@ public:
     void onPollEvent(int fd, short revents);
 
     std::vector<int> getCgiFds() const;                 // 現在監視中のCGI出力FDリスト
+    void checkCgiTimeouts(int maxLoops);  
 };
 
 #endif

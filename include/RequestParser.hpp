@@ -24,4 +24,4 @@ public:
   size_t getParsedLength() const { return parsedLength; }
 };
 
-void printRequest(const Request &req);
+// void printRequest(const Request &req);

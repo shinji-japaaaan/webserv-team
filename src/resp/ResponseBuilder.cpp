@@ -222,8 +222,10 @@ std::string ResponseBuilder::buildSimpleResponse(
 // GET / HEAD 処理
 std::string ResponseBuilder::handleGetLike(
     const Request &req,
-    const ServerConfig &cfg
+    const ServerConfig &cfg,
+    const ServerConfig::Location* loc
 ) {
+    (void)loc; // 今回は未使用。将来 location.root などを使うかもなので引数は残す
     // ディレクトリトラバーサル対策
     if (isTraversal(req.uri)) {
         return buildSimpleResponse(403, reasonPhrase(403), true);
@@ -245,8 +247,10 @@ std::string ResponseBuilder::handleGetLike(
 // DELETE 処理
 std::string ResponseBuilder::handleDelete(
     const Request &req,
-    const ServerConfig &cfg
+    const ServerConfig &cfg,
+    const ServerConfig::Location* loc
 ) {
+    (void)loc; // 今回は未使用。将来 location.root などを使うかもなので引数は残す
     // トラバーサル対策
     if (isTraversal(req.uri)) {
         return buildSimpleResponse(403, reasonPhrase(403), true);
@@ -276,14 +280,15 @@ std::string ResponseBuilder::handleDelete(
 // Server.cpp から呼ばれる
 std::string ResponseBuilder::generateResponse(
     const Request &req,
-    const ServerConfig &cfg
+    const ServerConfig &cfg,
+    const ServerConfig::Location* loc
 ) {
     // ここでメソッドごとの振り分けをする
     if (req.method == "GET" || req.method == "HEAD") {
-        return handleGetLike(req, cfg);
+        return handleGetLike(req, cfg, loc);
     }
     if (req.method == "DELETE") {
-        return handleDelete(req, cfg);
+        return handleDelete(req, cfg, loc);
     }
 
     // 許可されてないメソッドは405

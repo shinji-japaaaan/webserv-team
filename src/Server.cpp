@@ -4,16 +4,16 @@
 #include "resp/ResponseBuilder.hpp" 
 #include <sstream> 
 #include <sys/wait.h>
+#include <utility>
 
 // ----------------------------
 // コンストラクタ・デストラクタ
 // ----------------------------
 
 // サーバー初期化（ポート指定）
-Server::Server(int port, const std::string &host, const std::string &root,
-               const std::map<int, std::string> &errorPages)
-    : serverFd(-1), nfds(1), port(port),
-      host(host), root(root), errorPages(errorPages) {}
+Server::Server(const ServerConfig& c)
+    : cfg(c), serverFd(-1), nfds(1),
+      port(c.port), host(c.host), root(c.root), errorPages(c.errorPages) {}
 
 // サーバー破棄（全クライアントFDクローズ）
 Server::~Server() {
@@ -165,46 +165,80 @@ void Server::handleClient(int index) {
     if (bytes <= 0) {
         handleDisconnect(fd, index, bytes);
         return;
-    } else {
-      buffer[bytes] = '\0';
-      clients[fd].recvBuffer.append(buffer);
-        while (true) {
-            std::string request =
-                extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
-            if (request.empty()) break;
+    }
 
-            printRequest(clients[fd].currentRequest);
-            printf("Request complete from fd=%d\n", fd);
+    buffer[bytes] = '\0';
+    clients[fd].recvBuffer.append(buffer);
 
-            std::string response;
+    while (true) {
+        // 1リクエスト分を抽出
+        std::string requestStr =
+            extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
+        if (requestStr.empty()) break;
 
-            Request &req = clients[fd].currentRequest;
-            bool isCgi = isCgiRequest(req);
+        Request &req = clients[fd].currentRequest;
 
-            if (isCgi) {
-                // ✅ CGIを非同期実行
-                startCgiProcess(fd, req);
-            } else {
-				ResponseBuilder rb;
+        const ServerConfig::Location* loc = getLocationForUri(req.uri);
+        // printRequest(req);
+        printf("Request complete from fd=%d\n", fd);
 
-				// Server が保持する現在の設定を ServerConfig に詰めて渡す
-				ServerConfig cfg;
-				cfg.port = this->port;
-				cfg.host = this->host;
-				cfg.root = this->root;
-				cfg.errorPages = this->errorPages;
-				// ↑BさんのConfigParserが拡張されたら、ここでallowMethodsとかlocationも入れる想定
-
-				std::string response = rb.generateResponse(req, cfg);
-				queueSend(fd, response);
-            }
-            // このリクエスト分を削る（※二重eraseしない）
-            clients[fd].recvBuffer.erase(0, request.size());
+        // 🔹 メソッド許可チェック追加
+        if (!isMethodAllowed(req.method, loc)) {
+            std::string res =
+                "HTTP/1.1 405 Method Not Allowed\r\n"
+                "Content-Length: 0\r\n\r\n";
+            queueSend(fd, res);
+            clients[fd].recvBuffer.erase(0, requestStr.size());
+            continue;
         }
+
+
+        if (isCgiRequest(req)) {
+                startCgiProcess(fd, req, *loc);
+        } else if (req.method == "POST") {
+            break;
+            // handlePost(fd, req, loc);
+        } else {
+            ResponseBuilder rb;
+            std::string response = rb.generateResponse(req, cfg, loc);
+            queueSend(fd, response);
+        }
+
+        // このリクエスト分を recvBuffer から削除
+        clients[fd].recvBuffer.erase(0, requestStr.size());
     }
 }
 
+bool Server::isMethodAllowed(const std::string &method,
+                             const ServerConfig::Location *loc) {
+    if (!loc) return false;
+    for (size_t i = 0; i < loc->method.size(); i++) {
+        if (loc->method[i] == method) return true;
+    }
+    return false;
+}
+
+const ServerConfig::Location* Server::getLocationForUri(const std::string &uri) const {
+    const ServerConfig::Location* bestMatch = NULL;
+    size_t longest = 0;
+    for (std::map<std::string, ServerConfig::Location>::const_iterator it =
+             cfg.location.begin(); it != cfg.location.end(); ++it) {
+        const std::string &path = it->first;
+        if (uri.compare(0, path.size(), path) == 0) { // prefix match
+            if (path.size() > longest) {
+                longest = path.size();
+                bestMatch = &(it->second);
+            }
+        }
+    }
+    return bestMatch;
+}
+
 bool Server::isCgiRequest(const Request &req) {
+
+     // パーサー未実装 → loc に書き込まず、直接比較文字列を使用
+    const std::string cgiExt = ".php";
+
     // 1. クエリストリングを落とす (/foo.php?x=1 -> /foo.php)
     std::string uri = req.uri;
     size_t q = uri.find('?');
@@ -220,14 +254,23 @@ bool Server::isCgiRequest(const Request &req) {
     }
 
     std::string ext = uri.substr(dot); // ".php" とか
-    return (ext == ".php"); // いまはPHPだけCGI扱い
+    return (ext == cgiExt); // いまはPHPだけCGI扱い
 }
 
 // ----------------------------
 // CGI実行用関数
 // ----------------------------
 
-void Server::startCgiProcess(int clientFd, const Request &req) {
+std::pair<std::string, std::string> splitUri(const std::string& uri) {
+    size_t pos = uri.find('?');
+    if (pos == std::string::npos) {
+        return std::make_pair(uri, "");
+    } else {
+        return std::make_pair(uri.substr(0, pos), uri.substr(pos + 1));
+    }
+}
+
+void Server::startCgiProcess(int clientFd, const Request &req, const ServerConfig::Location& loc) {
     int inPipe[2], outPipe[2];
     if (pipe(inPipe) < 0 || pipe(outPipe) < 0) return;
 
@@ -240,11 +283,18 @@ void Server::startCgiProcess(int clientFd, const Request &req) {
         std::ostringstream len;
         len << req.body.size();
         setenv("CONTENT_LENGTH", len.str().c_str(), 1);
-        std::string scriptPath = root + req.uri;  // 例: /var/www/html/test.php
+        // URI 分割
+        std::pair<std::string, std::string> parts = splitUri(req.uri);
+        std::string path_only = parts.first;   // /cgi-bin/test_get.php
+        std::string query_str = parts.second;  // name=chatgpt&lang=ja
+        // SCRIPT_FILENAME 設定
+        std::string scriptPath = root + path_only;
         setenv("SCRIPT_FILENAME", scriptPath.c_str(), 1);
+        // QUERY_STRING 設定
+        setenv("QUERY_STRING", query_str.c_str(), 1);
         setenv("REDIRECT_STATUS", "200", 1);
         char *argv[] = { (char*)"php-cgi", NULL };
-        execve("/usr/bin/php-cgi", argv, environ);
+        execve(loc.cgi_path.c_str(), argv, environ);
         exit(1);
     }
 
@@ -270,6 +320,8 @@ void Server::startCgiProcess(int clientFd, const Request &req) {
     proc.clientFd = clientFd;
     proc.pid = pid;
     proc.outFd = outPipe[0];
+    proc.elapsedLoops = 0;
+    proc.startTime = time(NULL);
     cgiMap[outPipe[0]] = proc;
 }
 
@@ -284,24 +336,58 @@ void Server::handleCgiOutput(int fd) {
 
     if (n == 0) { // EOF
         int clientFd = cgiMap[fd].clientFd;
-        
-        //-----リスポンス組み立て-----
-        std::string body = cgiMap[fd].buffer;
-        if (body.find("HTTP/") != 0) {
-            std::ostringstream oss;
-            oss << "HTTP/1.1 200 OK\r\n"
-                << "Content-Length: " << body.size() << "\r\n\r\n" << body;
-            body = oss.str();
-        }
-        //---------------------------
+        // 関数を呼んでHTTPレスポンスを生成
+        std::string response = buildHttpResponseFromCgi(cgiMap[fd].buffer);
         
         // クライアントへ送信キューに追加
-        queueSend(clientFd, body);
+        queueSend(clientFd, response);
         close(fd);
         waitpid(cgiMap[fd].pid, NULL, 0);
         cgiMap.erase(fd);
     }
 }
+
+std::string Server::buildHttpResponseFromCgi(const std::string &cgiOutput) {
+    // CGIヘッダと本文を分離
+    size_t headerEnd = cgiOutput.find("\r\n\r\n");
+    std::string headers, content;
+    if (headerEnd != std::string::npos) {
+        headers = cgiOutput.substr(0, headerEnd);
+        content = cgiOutput.substr(headerEnd + 4);
+    } else {
+        headers = cgiOutput;
+    }
+
+    // --- Statusヘッダを探す ---
+    std::string statusLine = "HTTP/1.1 200 OK"; // デフォルト
+    size_t statusPos = headers.find("Status:");
+    if (statusPos != std::string::npos) {
+        size_t lineEnd = headers.find("\r\n", statusPos);
+        std::string statusValue = headers.substr(
+            statusPos + 7, lineEnd - (statusPos + 7));
+        // 前後の空白除去
+        size_t start = statusValue.find_first_not_of(" \t");
+        size_t end = statusValue.find_last_not_of(" \t");
+        if (start != std::string::npos && end != std::string::npos)
+            statusValue = statusValue.substr(start, end - start + 1);
+        statusLine = "HTTP/1.1 " + statusValue;
+        // "Status:" 行はHTTPレスポンスヘッダには不要なので削除
+        headers.erase(statusPos, lineEnd - statusPos + 2);
+    }
+
+    // --- HTTPレスポンスを組み立て ---
+    std::ostringstream oss;
+    oss << statusLine << "\r\n";
+    oss << "Content-Length: " << content.size() << "\r\n";
+    if (!headers.empty())
+        oss << headers << "\r\n";
+    oss << "\r\n";
+    oss << content;
+
+    return oss.str();
+}
+
+
 
 // ----------------------------
 // クライアント送信処理
@@ -452,5 +538,6 @@ int Server::findIndexByFd(int fd) {
     }
     return -1;
 }
+
 
 

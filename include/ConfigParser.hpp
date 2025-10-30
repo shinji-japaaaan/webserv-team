@@ -4,16 +4,6 @@
 #include <string>
 #include <vector>
 
-// struct Location {
-// 	std::string root;
-// 	std::string autoindex;
-// 	std::string upload_path;
-// 	std::string index;
-// 	int max_body_size;
-// 	std::string cgi_path;
-// 	std::map<int, std::string> ret;
-// };
-
 struct ServerConfig {
   int port;
   //   std::string server_name;
@@ -27,7 +17,7 @@ struct ServerConfig {
     std::string index;
     int max_body_size;
     std::string cgi_path;
-    std::vector<std::string> method;
+	  std::vector<std::string> method;
     std::map<int, std::string> ret;
   };
   std::map<std::string, Location> location;
@@ -46,8 +36,8 @@ private:
   std::vector<std::string> parse_by_space(const std::string &str);
   void parse_server_inside(const std::string &str);
   void init_ServerConfig();
-  void print_configServers();
-  //   void printLocation(const Location &loc);
+  // void print_configServers();
+//   void printLocation(const Location &loc);
   void printLocation(const ServerConfig::Location &loc);
   bool is_necessary_item();
   bool is_duplicate_item(std::string nest, std::string item,
