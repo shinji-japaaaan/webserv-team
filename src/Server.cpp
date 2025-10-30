@@ -178,7 +178,9 @@ void Server::handleClient(int index) {
 
         Request &req = clients[fd].currentRequest;
 
-        const ServerConfig::Location* loc = getLocationForUri(req.uri);
+        LocationMatch m = getLocationForUri(req.uri);
+        const ServerConfig::Location *loc = m.loc;
+        const std::string &locPath = m.path;
         // printRequest(req);
         printf("Request complete from fd=%d\n", fd);
 
@@ -218,16 +220,20 @@ bool Server::isMethodAllowed(const std::string &method,
     return false;
 }
 
-const ServerConfig::Location* Server::getLocationForUri(const std::string &uri) const {
-    const ServerConfig::Location* bestMatch = NULL;
-    size_t longest = 0;
-    for (std::map<std::string, ServerConfig::Location>::const_iterator it =
-             cfg.location.begin(); it != cfg.location.end(); ++it) {
-        const std::string &path = it->first;
-        if (uri.compare(0, path.size(), path) == 0) { // prefix match
-            if (path.size() > longest) {
-                longest = path.size();
-                bestMatch = &(it->second);
+// URIに最長一致するLocationを返す。なければNULL
+Server::LocationMatch Server::getLocationForUri(const std::string &uri) const {
+    LocationMatch bestMatch;
+    size_t bestLen = 0;
+
+    for (std::map<std::string, ServerConfig::Location>::const_iterator it = cfg.location.begin();
+         it != cfg.location.end(); ++it)
+    {
+        const std::string &locPath = it->first;
+        if (uri.compare(0, locPath.size(), locPath) == 0) {
+            if (locPath.size() > bestLen) {
+                bestLen = locPath.size();
+                bestMatch.loc  = &it->second;
+                bestMatch.path = locPath;
             }
         }
     }
