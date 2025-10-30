@@ -1,8 +1,8 @@
 #pragma once
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
-#include <set>
 
 // struct Location {
 // 	std::string root;
@@ -16,7 +16,7 @@
 
 struct ServerConfig {
   int port;
-//   std::string server_name;
+  //   std::string server_name;
   std::string host;
   std::string root;
   std::map<int, std::string> errorPages;
@@ -27,7 +27,7 @@ struct ServerConfig {
     std::string index;
     int max_body_size;
     std::string cgi_path;
-	std::vector<std::string> method;
+    std::vector<std::string> method;
     std::map<int, std::string> ret;
   };
   std::map<std::string, Location> location;
@@ -47,9 +47,11 @@ private:
   void parse_server_inside(const std::string &str);
   void init_ServerConfig();
   void print_configServers();
-//   void printLocation(const Location &loc);
+  //   void printLocation(const Location &loc);
   void printLocation(const ServerConfig::Location &loc);
   bool is_necessary_item();
+  bool is_duplicate_item(std::string nest, std::string item,
+                                       ServerConfig::Location *loc);
 
 public:
   //   void parse(const std::string &path);
