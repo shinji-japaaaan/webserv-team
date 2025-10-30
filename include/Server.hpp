@@ -26,11 +26,10 @@ private:
     // -----------------------------
     // メンバ変数
     // -----------------------------
+    ServerConfig cfg;             // サーバー設定
     int serverFd;                 // listen用ソケット
     pollfd fds[MAX_CLIENTS];      // クライアントFD監視配列
     int nfds;                     // fdsの有効数
-    
-    ServerConfig cfg;             // サーバー設定
     int port;                     // 待ち受けポート番号
     std::string host;             // 追加: 待ち受けホストアドレス
     std::string root;             // 追加: ドキュメントルート
@@ -86,7 +85,7 @@ private:
     // ここから追加：CGI対応用
     // -----------------------------
     bool isCgiRequest(const Request &req);               // CGI判定関数
-    void startCgiProcess(int clientFd, const Request &req);          // CGI実行関数
+    void startCgiProcess(int clientFd, const Request &req, const ServerConfig::Location &loc);          // CGI実行関数
     void handleCgiOutput(int outFd);                     // pollで読み取り可能になったCGI出力を処理
     std::string buildHttpResponseFromCgi(const std::string &cgiOutput);
 
@@ -97,8 +96,7 @@ public:
     // -----------------------------
     // コンストラクタ / デストラクタ
     // -----------------------------
-    Server(int port, const std::string &host, const std::string &root,
-           const std::map<int, std::string> &errorPages); // 追加: 新形式
+    Server(const ServerConfig& cfg);
     ~Server();
 
     // -----------------------------

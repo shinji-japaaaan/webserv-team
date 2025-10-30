@@ -11,10 +11,9 @@
 // ----------------------------
 
 // サーバー初期化（ポート指定）
-Server::Server(int port, const std::string &host, const std::string &root,
-               const std::map<int, std::string> &errorPages)
-    : serverFd(-1), nfds(1), port(port),
-      host(host), root(root), errorPages(errorPages) {}
+Server::Server(const ServerConfig& c)
+    : cfg(c), serverFd(-1), nfds(1),
+      port(c.port), host(c.host), root(c.root), errorPages(c.errorPages) {}
 
 // サーバー破棄（全クライアントFDクローズ）
 Server::~Server() {
@@ -184,7 +183,7 @@ void Server::handleClient(int index) {
         printf("Request complete from fd=%d\n", fd);
 
         if (isCgiRequest(req)) {
-                startCgiProcess(fd, req);
+                startCgiProcess(fd, req, *loc);
         } else if (req.method == "POST") {
             break;
             // handlePost(fd, req, loc);
@@ -202,7 +201,6 @@ void Server::handleClient(int index) {
 const ServerConfig::Location* Server::getLocationForUri(const std::string &uri) const {
     const ServerConfig::Location* bestMatch = NULL;
     size_t longest = 0;
-
     for (std::map<std::string, ServerConfig::Location>::const_iterator it =
              cfg.location.begin(); it != cfg.location.end(); ++it) {
         const std::string &path = it->first;
@@ -252,7 +250,7 @@ std::pair<std::string, std::string> splitUri(const std::string& uri) {
     }
 }
 
-void Server::startCgiProcess(int clientFd, const Request &req) {
+void Server::startCgiProcess(int clientFd, const Request &req, const ServerConfig::Location& loc) {
     int inPipe[2], outPipe[2];
     if (pipe(inPipe) < 0 || pipe(outPipe) < 0) return;
 
@@ -276,7 +274,7 @@ void Server::startCgiProcess(int clientFd, const Request &req) {
         setenv("QUERY_STRING", query_str.c_str(), 1);
         setenv("REDIRECT_STATUS", "200", 1);
         char *argv[] = { (char*)"php-cgi", NULL };
-        execve("/usr/bin/php-cgi", argv, environ);
+        execve(loc.cgi_path.c_str(), argv, environ);
         exit(1);
     }
 
