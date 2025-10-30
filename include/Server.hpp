@@ -36,6 +36,13 @@ private:
     std::map<int, std::string> errorPages; // 追加: エラーページ設定
 
     std::map<int, ClientInfo> clients; // fd -> ClientInfo 対応表
+
+    // Locationマッチ結果構造体
+    struct LocationMatch {
+        const ServerConfig::Location *loc;
+        std::string path; // cfg.location のキー（例: "/delete/"）
+        LocationMatch() : loc(NULL), path() {}
+    };
     
     // -----------------------------
     // ここから追加：CGI対応用
@@ -91,8 +98,10 @@ private:
     void handleCgiOutput(int outFd);                     // pollで読み取り可能になったCGI出力を処理
     std::string buildHttpResponseFromCgi(const std::string &cgiOutput);
 
-    const ServerConfig::Location* getLocationForUri(const std::string &uri) const;
+    Server::LocationMatch getLocationForUri(const std::string &uri) const;
     void sendGatewayTimeout(int clientFd);
+
+    void handlePost(int fd, Request &req, const ServerConfig::Location* loc);
 
 public:
     // -----------------------------

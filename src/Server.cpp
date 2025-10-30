@@ -5,6 +5,10 @@
 #include <sstream> 
 #include <sys/wait.h>
 #include <utility>
+#include <ctime>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
 
 // ----------------------------
 // コンストラクタ・デストラクタ
@@ -178,7 +182,9 @@ void Server::handleClient(int index) {
 
         Request &req = clients[fd].currentRequest;
 
-        const ServerConfig::Location* loc = getLocationForUri(req.uri);
+        LocationMatch m = getLocationForUri(req.uri);
+        const ServerConfig::Location *loc = m.loc;
+        // const std::string &locPath = m.path;
         // printRequest(req);
         printf("Request complete from fd=%d\n", fd);
 
@@ -196,8 +202,7 @@ void Server::handleClient(int index) {
         if (isCgiRequest(req)) {
                 startCgiProcess(fd, req, *loc);
         } else if (req.method == "POST") {
-            break;
-            // handlePost(fd, req, loc);
+            handlePost(fd, req, loc);
         } else {
             ResponseBuilder rb;
             std::string response = rb.generateResponse(req, cfg, loc);
@@ -209,6 +214,54 @@ void Server::handleClient(int index) {
     }
 }
 
+std::string generateUniqueFilename() {
+    // 現在時刻を取得
+    std::time_t t = std::time(NULL);
+    std::tm* now = std::localtime(&t);
+
+    std::ostringstream oss;
+
+    // 年月日_時分秒（ゼロ埋め）
+    oss.fill('0');
+    oss << (now->tm_year + 1900)
+        << std::setw(2) << (now->tm_mon + 1)
+        << std::setw(2) << now->tm_mday
+        << "_"
+        << std::setw(2) << now->tm_hour
+        << std::setw(2) << now->tm_min
+        << std::setw(2) << now->tm_sec;
+
+    // 乱数付与（0〜9999）
+    int randNum = std::rand() % 10000;
+    oss << "_" << randNum;
+
+    // ファイル拡張子
+    oss << ".txt";
+
+    return oss.str();
+}
+
+void Server::handlePost(int fd, Request &req, const ServerConfig::Location* loc) {
+    if (!loc->upload_path.empty()) {
+        std::string filename = loc->upload_path + "/" + generateUniqueFilename();
+        std::ofstream ofs(filename.c_str(), std::ios::binary);
+        if (!ofs) {
+            std::string res = "HTTP/1.1 500 Internal Server Error\r\nContent-Length:0\r\n\r\n";
+            queueSend(fd, res);
+            return;
+        }
+        ofs << req.body;
+        ofs.close();
+
+        std::string res = "HTTP/1.1 201 Created\r\nContent-Length:0\r\n\r\n";
+        queueSend(fd, res);
+    } else {
+        std::string res = "HTTP/1.1 403 Forbidden\r\nContent-Length:0\r\n\r\n";
+        queueSend(fd, res);
+    }
+}
+
+
 bool Server::isMethodAllowed(const std::string &method,
                              const ServerConfig::Location *loc) {
     if (!loc) return false;
@@ -218,16 +271,27 @@ bool Server::isMethodAllowed(const std::string &method,
     return false;
 }
 
-const ServerConfig::Location* Server::getLocationForUri(const std::string &uri) const {
-    const ServerConfig::Location* bestMatch = NULL;
-    size_t longest = 0;
-    for (std::map<std::string, ServerConfig::Location>::const_iterator it =
-             cfg.location.begin(); it != cfg.location.end(); ++it) {
-        const std::string &path = it->first;
-        if (uri.compare(0, path.size(), path) == 0) { // prefix match
-            if (path.size() > longest) {
-                longest = path.size();
-                bestMatch = &(it->second);
+std::string normalizePath(const std::string &path) {
+    if (!path.empty() && path[path.size() - 1] == '/')
+        return path.substr(0, path.size() - 1);
+    return path;
+}
+
+Server::LocationMatch Server::getLocationForUri(const std::string &uri) const {
+    LocationMatch bestMatch;
+    size_t bestLen = 0;
+
+    std::string normUri = normalizePath(uri);
+
+    for (std::map<std::string, ServerConfig::Location>::const_iterator it = cfg.location.begin();
+         it != cfg.location.end(); ++it)
+    {
+        std::string normLoc = normalizePath(it->first);
+        if (normUri.compare(0, normLoc.size(), normLoc) == 0) {
+            if (normLoc.size() > bestLen) {
+                bestLen = normLoc.size();
+                bestMatch.loc  = &it->second;
+                bestMatch.path = it->first; // 元のパスはそのまま
             }
         }
     }
