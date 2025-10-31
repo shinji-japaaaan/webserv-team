@@ -10,6 +10,7 @@ struct ClientInfo {
     bool requestComplete;      // リクエスト受信完了フラグ
 	bool shouldClose;  // レスポンス送信後に接続を閉じる必要がある場合に true
 	Request currentRequest;
+    size_t receivedBodySize; // 受信したボディのサイズ
 
     ClientInfo(): recvBuffer(""), sendBuffer(""), requestComplete(false), currentRequest() {}
 };
