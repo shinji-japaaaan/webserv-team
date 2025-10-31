@@ -174,6 +174,20 @@ void Server::handleClient(int index) {
     buffer[bytes] = '\0';
     clients[fd].recvBuffer.append(buffer);
 
+    // もしヘッダ解析済みなら max_body_size チェック
+    Request &req = clients[fd].currentRequest;
+    LocationMatch m = getLocationForUri(req.uri);
+    const ServerConfig::Location *loc = m.loc;
+
+    if (loc && clients[fd].receivedBodySize + bytes > static_cast<size_t>(loc->max_body_size)) {
+        queueSend(fd, "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n");
+        handleDisconnect(fd, index, bytes);
+        return;
+    }
+
+    // 累積ボディサイズを更新
+    clients[fd].receivedBodySize += bytes;
+
     // 1リクエストずつ処理
     while (true) {
         std::string requestStr = extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
