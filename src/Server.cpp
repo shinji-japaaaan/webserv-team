@@ -262,7 +262,7 @@ void Server::handlePost(int fd, Request &req, const ServerConfig::Location* loc)
         contentType = "";
 
     if (contentType.find("application/x-www-form-urlencoded") != std::string::npos) {
-        // handleUrlEncodedForm(fd, req, loc);
+        handleUrlEncodedForm(fd, req, loc);
         return;
     } 
     else if (contentType.find("multipart/form-data") != std::string::npos) {
@@ -272,6 +272,66 @@ void Server::handlePost(int fd, Request &req, const ServerConfig::Location* loc)
         std::string body = "Unsupported Content-Type: " + contentType + "\n";
         queueSend(fd, buildHttpResponse(415, body));
     }
+}
+
+// URLデコード用
+std::string urlDecode(const std::string &str) {
+    std::string ret;
+    char hex[3] = {0};
+    for (size_t i = 0; i < str.size(); ++i) {
+        if (str[i] == '+') {
+            ret += ' ';
+        } else if (str[i] == '%' && i + 2 < str.size()) {
+            hex[0] = str[i + 1];
+            hex[1] = str[i + 2];
+            ret += static_cast<char>(strtol(hex, NULL, 16));
+            i += 2;
+        } else {
+            ret += str[i];
+        }
+    }
+    return ret;
+}
+
+// x-www-form-urlencoded を処理する関数
+void Server::handleUrlEncodedForm(int fd, Request &req, const ServerConfig::Location* loc) {
+    std::map<std::string, std::string> formData;
+    std::stringstream ss(req.body);
+    std::string pair;
+
+    // key=value に分解
+    while (std::getline(ss, pair, '&')) {
+        size_t eqPos = pair.find('=');
+        if (eqPos != std::string::npos) {
+            std::string key = urlDecode(pair.substr(0, eqPos));
+            std::string value = urlDecode(pair.substr(eqPos + 1));
+            formData[key] = value;
+        }
+    }
+
+    // ファイル保存パスが設定されていれば保存
+    if (!loc->upload_path.empty()) {
+        std::ostringstream filenameStream;
+        filenameStream << loc->upload_path << "/form_" << time(NULL) << ".txt";
+        std::string filename = filenameStream.str();
+
+        std::ofstream ofs(filename.c_str());
+        if (!ofs) {
+            std::string res = buildHttpResponse(500, "Internal Server Error\n");
+            queueSend(fd, res);
+            return;
+        }
+
+        for (std::map<std::string, std::string>::const_iterator it = formData.begin();
+             it != formData.end(); ++it) {
+            ofs << it->first << "=" << it->second << "\n";
+        }
+        ofs.close();
+    }
+
+    std::string responseBody = "Form received successfully\n";
+    std::string res = buildHttpResponse(201, responseBody);
+    queueSend(fd, res);
 }
 
 std::string extractBoundary(const std::string &contentType) {
@@ -379,6 +439,7 @@ bool Server::isMethodAllowed(const std::string &method,
 }
 
 std::string normalizePath(const std::string &path) {
+    if (path == "/") return "/";  // ルートはそのまま
     if (!path.empty() && path[path.size() - 1] == '/')
         return path.substr(0, path.size() - 1);
     return path;

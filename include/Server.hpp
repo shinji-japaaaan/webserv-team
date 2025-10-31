@@ -106,6 +106,7 @@ private:
     // -----------------------------
     void handlePost(int fd, Request &req, const ServerConfig::Location* loc);
     void handleMultipartForm(int fd, Request &req, const ServerConfig::Location* loc);
+    void handleUrlEncodedForm(int fd, Request &req, const ServerConfig::Location* loc);
 
     int findFdByRecvBuffer(const std::string &buffer) const;
 
