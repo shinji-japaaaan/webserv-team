@@ -81,6 +81,10 @@ private:
     std::string extractNextRequest(std::string &recvBuffer, Request &currentRequest);
     bool isMethodAllowed(const std::string &method,
                          const ServerConfig::Location *loc);
+    bool checkMaxBodySize(int fd, int bytes, const ServerConfig::Location* loc);
+    bool handleMethodCheck(int fd, Request &req, const ServerConfig::Location *loc, size_t reqSize);
+    void processRequest(int fd, Request &req, const ServerConfig::Location *loc,
+                        const std::string &locPath, size_t reqSize);
 
     // -----------------------------
     // クライアント送信処理

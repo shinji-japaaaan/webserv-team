@@ -174,44 +174,79 @@ void Server::handleClient(int index) {
     buffer[bytes] = '\0';
     clients[fd].recvBuffer.append(buffer);
 
+    // もしヘッダ解析済みなら max_body_size チェック
+    Request &req = clients[fd].currentRequest;
+    LocationMatch m = getLocationForUri(req.uri);
+    const ServerConfig::Location *loc = m.loc;
+
+    if (loc && clients[fd].receivedBodySize + bytes > static_cast<size_t>(loc->max_body_size)) {
+        queueSend(fd, "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n");
+        handleDisconnect(fd, index, bytes);
+        return;
+    }
+
+    // 累積ボディサイズを更新
+    clients[fd].receivedBodySize += bytes;
+
+    // 1リクエストずつ処理
     while (true) {
-        // 1リクエスト分を抽出
-        std::string requestStr =
-            extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
+        std::string requestStr = extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
         if (requestStr.empty()) break;
 
         Request &req = clients[fd].currentRequest;
-
         LocationMatch m = getLocationForUri(req.uri);
         const ServerConfig::Location *loc = m.loc;
-        // const std::string &locPath = m.path;generateResponseでつかうのでけさない
-        // printRequest(req);
+        const std::string &locPath = m.path;
+
+        // 1リクエスト分の body が max_body_size を超えていないかチェック
+        if (!checkMaxBodySize(fd, req.body.size(), loc)) {
+            handleDisconnect(fd, index, 0);
+            break;
+        }
+
         printf("Request complete from fd=%d\n", fd);
 
-        // 🔹 メソッド許可チェック追加
-        if (!isMethodAllowed(req.method, loc)) {
-            std::string res =
-                "HTTP/1.1 405 Method Not Allowed\r\n"
-                "Content-Length: 0\r\n\r\n";
-            queueSend(fd, res);
-            clients[fd].recvBuffer.erase(0, requestStr.size());
-            continue;
-        }
+        // メソッド許可チェック
+        if (!handleMethodCheck(fd, req, loc, requestStr.size())) continue;
 
-
-        if (isCgiRequest(req)) {
-                startCgiProcess(fd, req, *loc);
-        } else if (req.method == "POST") {
-            handlePost(fd, req, loc);
-        } else {
-            ResponseBuilder rb;
-            std::string response = rb.generateResponse(req, cfg, loc);
-            queueSend(fd, response);
-        }
-
-        // このリクエスト分を recvBuffer から削除
-        clients[fd].recvBuffer.erase(0, requestStr.size());
+        // CGI / POST / GET 処理
+        processRequest(fd, req, loc, locPath, requestStr.size());
     }
+}
+
+// Server.cpp に実装
+bool Server::checkMaxBodySize(int fd, int bytes, const ServerConfig::Location* loc) {
+    if (!loc) return true;
+
+    clients[fd].receivedBodySize += bytes;
+    if (clients[fd].receivedBodySize > static_cast<size_t>(loc->max_body_size)) {
+        queueSend(fd, "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n");
+        clients[fd].recvBuffer.clear();
+        return false; // 超過
+    }
+    return true;
+}
+
+bool Server::handleMethodCheck(int fd, Request &req, const ServerConfig::Location *loc, size_t reqSize) {
+    if (!isMethodAllowed(req.method, loc)) {
+        queueSend(fd, "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n");
+        clients[fd].recvBuffer.erase(0, reqSize);
+        return false;
+    }
+    return true;
+}
+
+void Server::processRequest(int fd, Request &req, const ServerConfig::Location *loc,
+                            const std::string &locPath, size_t reqSize) {
+    if (isCgiRequest(req)) {
+        startCgiProcess(fd, req, *loc);
+    } else if (req.method == "POST") {
+        handlePost(fd, req, loc);
+    } else {
+        ResponseBuilder rb;
+        queueSend(fd, rb.generateResponse(req, cfg, loc, locPath));
+    }
+    clients[fd].recvBuffer.erase(0, reqSize);
 }
 
 std::string generateUniqueFilename() {
