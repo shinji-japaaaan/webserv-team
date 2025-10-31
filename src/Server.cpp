@@ -274,25 +274,84 @@ void Server::handlePost(int fd, Request &req, const ServerConfig::Location* loc)
     }
 }
 
+std::string extractBoundary(const std::string &contentType) {
+    std::string key = "boundary=";
+    size_t pos = contentType.find(key);
+    if (pos == std::string::npos) return "";
+    return "--" + contentType.substr(pos + key.size());
+}
+
+std::vector<std::string> splitParts(const std::string &body,
+                                   const std::string &boundary) {
+    std::vector<std::string> parts;
+    size_t start = 0, end;
+
+    while ((end = body.find(boundary, start)) != std::string::npos) {
+        std::string part = body.substr(start, end - start);
+        if (!part.empty()) parts.push_back(part);
+        start = end + boundary.size();
+    }
+    return parts;
+}
+
+void parsePart(const std::string &part,
+               std::string &filename, std::string &content) {
+    size_t headerEnd = part.find("\r\n\r\n");
+    if (headerEnd == std::string::npos) return;
+
+    std::string header = part.substr(0, headerEnd);
+    content = part.substr(headerEnd + 4);
+
+    // filename 抽出
+    size_t pos = header.find("filename=\"");
+    if (pos != std::string::npos) {
+        pos += 10;
+        size_t end = header.find("\"", pos);
+        filename = header.substr(pos, end - pos);
+    } else {
+        filename = "upload.bin";
+    }
+}
+
+
 void Server::handleMultipartForm(int fd, Request &req, const ServerConfig::Location* loc) {
+    std::cerr << "=== Multipart Raw Body ===\n"
+          << req.body << "\n=========================\n";
+
     if (loc->upload_path.empty()) {
         queueSend(fd, buildHttpResponse(403, "Upload path not configured.\n"));
         return;
     }
 
-    std::string filename = loc->upload_path + "/" + generateUniqueFilename();
-
-    std::ofstream ofs(filename.c_str(), std::ios::binary);
-    if (!ofs) {
-        queueSend(fd, buildHttpResponse(500, "Failed to save the file.\n"));
+    std::string boundary = extractBoundary(req.headers["Content-Type"]);
+    if (boundary.empty()) {
+        queueSend(fd, buildHttpResponse(400, "Missing boundary in Content-Type.\n"));
         return;
     }
 
-    ofs << req.body; // ※後で multipart を正しくパースしてから書き込む
-    ofs.close();
+    std::vector<std::string> parts = splitParts(req.body, boundary);
+    if (parts.empty()) {
+        queueSend(fd, buildHttpResponse(400, "No multipart data found.\n"));
+        return;
+    }
 
-    queueSend(fd, buildHttpResponse(201, "File uploaded successfully: " + filename + "\n"));
+    for (size_t i = 0; i < parts.size(); ++i) {
+        std::string filename, content;
+        parsePart(parts[i], filename, content);
+        std::string fullpath = loc->upload_path + "/" + filename;
+
+        std::ofstream ofs(fullpath.c_str(), std::ios::binary);
+        if (!ofs) {
+            queueSend(fd, buildHttpResponse(500, "Failed to open file.\n"));
+            return;
+        }
+        ofs.write(content.data(), content.size());
+        ofs.close();
+    }
+
+    queueSend(fd, buildHttpResponse(201, "File uploaded successfully.\n"));
 }
+
 
 
 
