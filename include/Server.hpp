@@ -13,8 +13,6 @@
 #include <fcntl.h>
 #include <cerrno>
 #include <vector>
-#include <fstream>
-#include <sstream>
 
 #include "ClientInfo.hpp"
 #include "RequestParser.hpp"
@@ -22,34 +20,22 @@
 
 #define MAX_CLIENTS 100
 
-#ifndef SIZE_MAX
-#define SIZE_MAX ((size_t)-1)
-#endif
-
-// multipart/form-data用の簡易構造体
-struct FilePart {
-    std::string name;        // フィールド名
-    std::string filename;    // 元ファイル名
-    std::string contentType; // Content-Type
-    std::string content;     // 実データ
-};
-
-// ==============================
-// Serverクラス
-// ==============================
+// サーバー全体を管理するクラス
 class Server {
 private:
-    // --------------------------------
+    // -----------------------------
     // メンバ変数
-    // --------------------------------
-    int serverFd;                 // listenソケットFD
-    pollfd fds[MAX_CLIENTS];      // poll監視配列
-    int nfds;                     // 有効なfds数
-    ServerConfig cfg;             // サーバ設定全体
-    std::string host;             // ホストアドレス
-    std::string root;             // ドキュメントルート
-    size_t clientMaxBodySize;     // 最大リクエストボディサイズ
-    std::map<int, ClientInfo> clients; // クライアント管理マップ
+    // -----------------------------
+    ServerConfig cfg;             // サーバー設定
+    int serverFd;                 // listen用ソケット
+    pollfd fds[MAX_CLIENTS];      // クライアントFD監視配列
+    int nfds;                     // fdsの有効数
+    int port;                     // 待ち受けポート番号
+    std::string host;             // 追加: 待ち受けホストアドレス
+    std::string root;             // 追加: ドキュメントルート
+    std::map<int, std::string> errorPages; // 追加: エラーページ設定
+
+    std::map<int, ClientInfo> clients; // fd -> ClientInfo 対応表
 
     // Locationマッチ結果構造体
     struct LocationMatch {
@@ -57,86 +43,71 @@ private:
         std::string path; // cfg.location のキー（例: "/delete/"）
         LocationMatch() : loc(NULL), path() {}
     };
-
-    // CGIプロセス管理構造体
+    
+    // -----------------------------
+    // ここから追加：CGI対応用
+    // -----------------------------
     struct CgiProcess {
         pid_t pid;
-        int inFd;
-        int outFd;
-        int clientFd;
+        int inFd;   // CGIへの書き込み用
+        int outFd;  // CGIからの読み取り用
+        int clientFd; // ←追加: このCGIリクエストのクライアントFD
         Request req;
-        std::string buffer;
-        int elapsedLoops;
-        bool headerSent;
-        CgiProcess()
-            : pid(-1), inFd(-1), outFd(-1), clientFd(-1),
-              buffer(""), elapsedLoops(0), headerSent(false) {}
-    };
+        std::string buffer;          // ←追加: CGI出力を一時的に蓄積
+        int elapsedLoops; // poll ループ数タイムアウト用
+        bool activeInLastPoll;
+        time_t startTime;  // CGIプロセス開始時刻
+};
+    std::map<int, CgiProcess> cgiMap; // key: outFd, value: 管理情報
 
-    std::map<int, CgiProcess> cgiMap; // key: outFd, value: CGIプロセス情報
-
-    // --------------------------------
-    // 初期化・ソケット関連
-    // --------------------------------
+    // -----------------------------
+    // 初期化系
+    // -----------------------------
     bool createSocket();
     bool bindAndListen();
 
-    // --------------------------------
+    // -----------------------------
     // 接続処理
-    // --------------------------------
+    // -----------------------------
     void handleNewConnection();
-    int acceptClient();
-    LocationMatch getLocationForUri(const std::string &uri) const;
+    int acceptClient();                  // accept + nonblocking設定
+    void handleDisconnect(int fd, int index, int bytes);
+    void handleConnectionClose(int fd);
 
-    // --------------------------------
-    // リクエスト受信処理
-    // --------------------------------
+    // -----------------------------
+    // クライアント受信処理
+    // -----------------------------
     void handleClient(int index);
     std::string extractNextRequest(std::string &recvBuffer, Request &currentRequest);
+    bool isMethodAllowed(const std::string &method,
+                         const ServerConfig::Location *loc);
 
-    // --------------------------------
-    // レスポンス送信処理
-    // --------------------------------
+    // -----------------------------
+    // クライアント送信処理
+    // -----------------------------
     void handleClientSend(int index);
     void queueSend(int fd, const std::string &data);
-    void queueSendChunk(int fd, const std::string &data);
-    void handleConnectionClose(int fd);
-    void handleDisconnect(int fd, int index, int bytes);
+
     int findIndexByFd(int fd);
 
-    // --------------------------------
-    // Method制御
-    // --------------------------------
-    bool isMethodAllowed(const std::string &method, const ServerConfig::Location *loc) const;
-    std::string buildAllowHeader(const ServerConfig::Location *loc) const;
+    // -----------------------------
+    // ここから追加：CGI対応用
+    // -----------------------------
+    bool isCgiRequest(const Request &req);               // CGI判定関数
+    void startCgiProcess(int clientFd, const Request &req, const ServerConfig::Location &loc);          // CGI実行関数
+    void handleCgiOutput(int outFd);                     // pollで読み取り可能になったCGI出力を処理
+    std::string buildHttpResponseFromCgi(const std::string &cgiOutput);
 
-    // --------------------------------
-    // POST関連
-    // --------------------------------
-    void handlePost(int clientFd, const Request &req, const ServerConfig::Location *loc);
-    void handleUrlEncodedForm(int clientFd, const Request &req, const ServerConfig::Location *loc);
-    void handleMultipartForm(int clientFd, const Request &req, const ServerConfig::Location *loc);
-    std::map<std::string, std::string> parseUrlEncoded(const std::string &body);
-    std::vector<FilePart> parseMultipart(const std::string &contentType, const std::string &body);
-    std::string sanitizeFileName(const std::string &filename);
-    void sendPayloadTooLarge(int fd);
-    std::string urlDecode(const std::string &s);
-    std::string joinMethods(const std::vector<std::string> &methods) const;
-
-    // --------------------------------
-    // CGI関連
-    // --------------------------------
-    bool isCgiRequest(const Request &req);
-    void startCgiProcess(int clientFd, const Request &req);
-    void handleCgiOutput(int outFd);
-    void sendInternalServerError(int clientFd);
+    Server::LocationMatch getLocationForUri(const std::string &uri) const;
     void sendGatewayTimeout(int clientFd);
+
+    void handlePost(int fd, Request &req, const ServerConfig::Location* loc);
 
 public:
     // -----------------------------
     // コンストラクタ / デストラクタ
     // -----------------------------
-    Server(const ServerConfig &config);
+    Server(const ServerConfig& cfg);
     ~Server();
 
     // -----------------------------
@@ -150,9 +121,8 @@ public:
     // ServerManager から呼ばれる安全な公開インターフェース
     void onPollEvent(int fd, short revents);
 
-    // ✅ 以下を public に追加！
-    std::vector<int> getCgiFds() const;      // CGI出力FDを返す
-    void checkCgiTimeouts(int maxLoops);     // CGIタイムアウト監視
+    std::vector<int> getCgiFds() const;                 // 現在監視中のCGI出力FDリスト
+    void checkCgiTimeouts(int maxLoops);  
 };
 
-#endif // SERVER_HPP
+#endif

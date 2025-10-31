@@ -2,6 +2,8 @@
 #include <iostream>
 #include <poll.h>
 #include <unistd.h>
+#include <signal.h>
+#include <sys/wait.h>
 
 ServerManager::ServerManager() {}
 
@@ -37,8 +39,8 @@ bool ServerManager::initAllServers() {
 // 全ServerのFDを1つのpoll配列で管理する
 // ----------------------------
 void ServerManager::runAllServers() {
-    const int pollTimeoutMs = 100;   // poll のタイムアウト
-    const int cgiTimeoutLoops = 50;  // 100ms * 50 ≒ 5秒
+    const int pollTimeoutMs = 100;    // poll のタイムアウト
+    const int cgiTimeoutSeconds = 5; // CGI タイムアウトは 5 秒
 
     while (true) {
         std::vector<PollEntry> entries = buildPollEntries();
@@ -60,14 +62,73 @@ void ServerManager::runAllServers() {
 
         handlePollEvents(fds, entries.size(), entries);
 
-        // --- CGI タイムアウト処理は各サーバーに委譲 ---
+        // --- CGI タイムアウト処理 ---
         for (size_t i = 0; i < servers.size(); ++i) {
-            servers[i]->checkCgiTimeouts(cgiTimeoutLoops);
+            servers[i]->checkCgiTimeouts(cgiTimeoutSeconds);
         }
 
         delete[] fds;
     }
 }
+
+
+void Server::checkCgiTimeouts(int timeoutSeconds) {
+    time_t now = time(NULL);
+    std::map<int, CgiProcess>::iterator it = cgiMap.begin();
+
+    while (it != cgiMap.end()) {
+        CgiProcess &proc = it->second;
+
+        if (difftime(now, proc.startTime) > timeoutSeconds) {
+            // --- CGI 強制終了 ---
+            kill(proc.pid, SIGKILL);
+
+            // --- 504 Gateway Timeout レスポンス作成 ---
+            sendGatewayTimeout(proc.clientFd);
+
+            // --- CGI 出力 fd を閉じる ---
+            close(proc.outFd);
+
+            // --- 子プロセス回収 ---
+            waitpid(proc.pid, NULL, 0);
+
+            // --- map から削除 ---
+            std::map<int, CgiProcess>::iterator tmp = it;
+            ++it;
+            cgiMap.erase(tmp);
+        } else {
+            ++it;
+        }
+    }
+}
+
+
+void Server::sendGatewayTimeout(int clientFd) {
+    std::string response =
+        "HTTP/1.1 504 Gateway Timeout\r\n"
+        "Content-Length: 60\r\n"
+        "Content-Type: text/html\r\n\r\n"
+        "<html><body><h1>504 Gateway Timeout</h1>"
+        "<p>The CGI script did not respond in time.</p></body></html>";
+
+    // クライアント情報が存在しない場合は作成
+    std::map<int, ClientInfo>::iterator it = clients.find(clientFd);
+    if (it == clients.end()) {
+        ClientInfo ci;
+        clients[clientFd] = ci;
+        it = clients.find(clientFd);
+    }
+
+    ClientInfo &client = it->second;
+    client.sendBuffer += response;
+
+    // POLLOUT を有効化して poll で送信可能にする
+    int idx = findIndexByFd(clientFd);
+    if (idx >= 0) {
+        fds[idx].events |= POLLOUT;
+    }
+}
+
 
 // ----------------------------
 // poll対象FDの作成
@@ -107,6 +168,15 @@ std::vector<PollEntry> ServerManager::buildPollEntries() {
     }
 
     return pollEntries;
+}
+
+std::vector<int> Server::getCgiFds() const {
+    std::vector<int> fds;
+    for (std::map<int, CgiProcess>::const_iterator it = cgiMap.begin();
+        it != cgiMap.end(); ++it) {
+        fds.push_back(it->first);
+    }
+    return fds;
 }
 
 // ----------------------------

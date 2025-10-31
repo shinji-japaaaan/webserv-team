@@ -1,30 +1,23 @@
 #include "Server.hpp"
 #include "log.hpp"
 #include "RequestParser.hpp"
-#include "ConfigParser.hpp"
 #include "resp/ResponseBuilder.hpp" 
 #include <sstream> 
 #include <sys/wait.h>
-#include <climits>
+#include <utility>
+#include <ctime>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
 
 // ----------------------------
 // コンストラクタ・デストラクタ
 // ----------------------------
 
 // サーバー初期化（ポート指定）
-Server::Server(const ServerConfig &config)
-    : serverFd(-1),
-      nfds(1),
-      cfg(config),
-      clientMaxBodySize(SIZE_MAX)
-{
-    if (config.max_body_size > 0) {
-        clientMaxBodySize = config.max_body_size;
-    }
-	// ★ここ大事：他の箇所で使うのでメンバにも入れておく
-    host = config.host;
-    root = config.root;
-}
+Server::Server(const ServerConfig& c)
+    : cfg(c), serverFd(-1), nfds(1),
+      port(c.port), host(c.host), root(c.root), errorPages(c.errorPages) {}
 
 // サーバー破棄（全クライアントFDクローズ）
 Server::~Server() {
@@ -49,7 +42,7 @@ bool Server::init() {
     fds[0].fd = serverFd;
     fds[0].events = POLLIN;
 
-    std::cout << "Server listening on port " << cfg.port << std::endl;
+    std::cout << "Server listening on port " << port << std::endl;
     return true;
 }
 
@@ -89,7 +82,7 @@ bool Server::createSocket() {
 bool Server::bindAndListen() {
     sockaddr_in addr;
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(cfg.port);
+    addr.sin_port = htons(port);
     addr.sin_addr.s_addr = inet_addr(host.c_str());
 
     if (addr.sin_addr.s_addr == INADDR_NONE) {
@@ -164,58 +157,6 @@ int Server::acceptClient() {
     return clientFd;
 }
 
-// URIに最長一致するLocationを返す。なければNULL
-Server::LocationMatch Server::getLocationForUri(const std::string &uri) const {
-    LocationMatch bestMatch;
-    size_t bestLen = 0;
-
-    for (std::map<std::string, ServerConfig::Location>::const_iterator it = cfg.location.begin();
-         it != cfg.location.end(); ++it)
-    {
-        const std::string &locPath = it->first;
-        if (uri.compare(0, locPath.size(), locPath) == 0) {
-            if (locPath.size() > bestLen) {
-                bestLen = locPath.size();
-                bestMatch.loc  = &it->second;
-                bestMatch.path = locPath;
-            }
-        }
-    }
-    return bestMatch;
-}
-
-bool Server::isMethodAllowed(const std::string &method,
-                             const ServerConfig::Location *loc) const {
-    // locが無いなら、とりあえず全許可扱いにしないほうが安全だけど
-    // まずは「loc指定なし→制限なし」という挙動でいく
-    if (!loc) return true;
-
-    // locationにmethodディレクティブが無ければ制限なし
-    if (loc->method.empty()) return true;
-
-    // その中にこのmethodが含まれているか？
-    for (size_t i = 0; i < loc->method.size(); ++i) {
-        if (loc->method[i] == method) {
-            return true;
-        }
-    }
-    return false;
-}
-
-std::string Server::buildAllowHeader(const ServerConfig::Location *loc) const {
-    // Allowヘッダ用に "GET, HEAD, DELETE" みたいな文字列を返す
-    if (!loc || loc->method.empty()) {
-        // locationに指定がなければサーバ側のデフォ想定
-        return "GET, HEAD, DELETE";
-    }
-    std::string allow;
-    for (size_t i = 0; i < loc->method.size(); ++i) {
-        if (i) allow += ", ";
-        allow += loc->method[i];
-    }
-    return allow;
-}
-
 // ----------------------------
 // クライアント受信処理
 // ----------------------------
@@ -234,440 +175,166 @@ void Server::handleClient(int index) {
     clients[fd].recvBuffer.append(buffer);
 
     while (true) {
-        std::string rawReq =
+        // 1リクエスト分を抽出
+        std::string requestStr =
             extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
-        if (rawReq.empty())
-            break;
+        if (requestStr.empty()) break;
 
         Request &req = clients[fd].currentRequest;
-        printRequest(req);
 
-        // Location解決
         LocationMatch m = getLocationForUri(req.uri);
-        const ServerConfig::Location* loc = m.loc;
-        const std::string& locPath = m.path;
+        const ServerConfig::Location *loc = m.loc;
+        // const std::string &locPath = m.path;
+        // printRequest(req);
+        printf("Request complete from fd=%d\n", fd);
 
-        // ボディサイズ制限
-        size_t maxAllowed = clientMaxBodySize;
-        if (loc && loc->max_body_size > 0) maxAllowed = loc->max_body_size;
-        if (req.body.size() > maxAllowed) {
-            ResponseBuilder rb;
-            std::string resp = rb.buildSimpleResponse(413, "Payload Too Large", true);
-            queueSend(fd, resp);                     // ★必ず送信キューに積む
-            clients[fd].shouldClose = true;          // ★close 指示は送信後
-            clients[fd].recvBuffer.erase(0, rawReq.size());
-            break;
+        // 🔹 メソッド許可チェック追加
+        if (!isMethodAllowed(req.method, loc)) {
+            std::string res =
+                "HTTP/1.1 405 Method Not Allowed\r\n"
+                "Content-Length: 0\r\n\r\n";
+            queueSend(fd, res);
+            clients[fd].recvBuffer.erase(0, requestStr.size());
+            continue;
         }
 
-        // CGI or 通常
-        bool cgi = isCgiRequest(req);
-        if (cgi) {
-            startCgiProcess(fd, req);
+
+        if (isCgiRequest(req)) {
+                startCgiProcess(fd, req, *loc);
+        } else if (req.method == "POST") {
+            handlePost(fd, req, loc);
         } else {
-    // --- 通常レスポンスの送信（デバッグ付） ---
-			ResponseBuilder rb;
-			std::string resp = rb.generateResponse(req, cfg, loc, locPath);
-
-			// ★デバッグ: 返すサイズと先頭行を出す
-			size_t eol = resp.find("\r\n");
-			std::string firstLine = (eol == std::string::npos) ? resp : resp.substr(0, eol);
-			std::cout << "[SEND] fd=" << fd
-					<< " bytes=" << resp.size()
-					<< " first-line=\"" << firstLine << "\"\n";
-
-			queueSend(fd, resp);
-
-			// ★デバッグ段階では必ずクローズ（keep-aliveは後で戻す）
-			clients[fd].shouldClose = true;
+            ResponseBuilder rb;
+            std::string response = rb.generateResponse(req, cfg, loc);
+            queueSend(fd, response);
         }
 
-        // 消費分を必ず削除
-        clients[fd].recvBuffer.erase(0, rawReq.size());
+        // このリクエスト分を recvBuffer から削除
+        clients[fd].recvBuffer.erase(0, requestStr.size());
     }
 }
 
-void Server::sendPayloadTooLarge(int fd) {
-    std::string body = "<html><body><h1>413 Payload Too Large</h1></body></html>";
+std::string generateUniqueFilename() {
+    // 現在時刻を取得
+    std::time_t t = std::time(NULL);
+    std::tm* now = std::localtime(&t);
+
     std::ostringstream oss;
-    oss << "HTTP/1.1 413 Payload Too Large\r\n"
-        << "Content-Type: text/html\r\n"
-        << "Content-Length: " << body.size() << "\r\n"
-        << "Connection: close\r\n\r\n"
-        << body;
-    queueSend(fd, oss.str());
+
+    // 年月日_時分秒（ゼロ埋め）
+    oss.fill('0');
+    oss << (now->tm_year + 1900)
+        << std::setw(2) << (now->tm_mon + 1)
+        << std::setw(2) << now->tm_mday
+        << "_"
+        << std::setw(2) << now->tm_hour
+        << std::setw(2) << now->tm_min
+        << std::setw(2) << now->tm_sec;
+
+    // 乱数付与（0〜9999）
+    int randNum = std::rand() % 10000;
+    oss << "_" << randNum;
+
+    // ファイル拡張子
+    oss << ".txt";
+
+    return oss.str();
 }
 
-void Server::handlePost(int clientFd, const Request &req, const ServerConfig::Location* loc) {
-    std::cout << "[INFO] Handling POST for URI: " << req.uri << std::endl;
-    if (loc && !loc->method.empty()) {
-        if (std::find(loc->method.begin(), loc->method.end(), "POST") == loc->method.end()) {
-            // ResponseBuilderを使って405を送信
-            ResponseBuilder rb;
-            std::string allow = joinMethods(loc->method); // "GET, HEAD, DELETE" など
-            std::string res = rb.buildMethodNotAllowed(allow, cfg);
-            queueSend(clientFd, res);
+void Server::handlePost(int fd, Request &req, const ServerConfig::Location* loc) {
+    if (!loc->upload_path.empty()) {
+        std::string filename = loc->upload_path + "/" + generateUniqueFilename();
+        std::ofstream ofs(filename.c_str(), std::ios::binary);
+        if (!ofs) {
+            std::string res = "HTTP/1.1 500 Internal Server Error\r\nContent-Length:0\r\n\r\n";
+            queueSend(fd, res);
             return;
         }
-    }
+        ofs << req.body;
+        ofs.close();
 
-    // -----------------------------
-    // Content-Type 分岐
-    // -----------------------------
-    std::string contentType;
-    if (req.headers.find("Content-Type") != req.headers.end())
-        contentType = req.headers.at("Content-Type");
-    else
-        contentType = "";
-    if (contentType.find("application/x-www-form-urlencoded") != std::string::npos) {
-        handleUrlEncodedForm(clientFd, req, loc);
-    }
-    else if (contentType.find("multipart/form-data") != std::string::npos) {
-        handleMultipartForm(clientFd, req, loc);
-    }
-    else {
-        // 未対応Content-Type
-        std::ostringstream body;
-        body << "<html><body><h1>415 Unsupported Media Type</h1></body></html>";
-        std::ostringstream res;
-        res << "HTTP/1.1 415 Unsupported Media Type\r\n"
-            << "Content-Type: text/html\r\n"
-            << "Content-Length: " << body.str().size() << "\r\n"
-            << "Connection: close\r\n\r\n"
-            << body.str();
-        queueSend(clientFd, res.str());
+        std::string res = "HTTP/1.1 201 Created\r\nContent-Length:0\r\n\r\n";
+        queueSend(fd, res);
+    } else {
+        std::string res = "HTTP/1.1 403 Forbidden\r\nContent-Length:0\r\n\r\n";
+        queueSend(fd, res);
     }
 }
 
-std::string Server::joinMethods(const std::vector<std::string>& methods) const {
-    std::string s;
-    for (size_t i = 0; i < methods.size(); ++i) {
-        if (i > 0) s += ", ";
-        s += methods[i];
+
+bool Server::isMethodAllowed(const std::string &method,
+                             const ServerConfig::Location *loc) {
+    if (!loc) return false;
+    for (size_t i = 0; i < loc->method.size(); i++) {
+        if (loc->method[i] == method) return true;
     }
-    return s;
+    return false;
 }
 
-// -----------------------------
-// 共通チャンク送信補助
-// -----------------------------
-void Server::queueSendChunk(int fd, const std::string &data) {
-    std::ostringstream chunk;
-    chunk << std::hex << data.size() << "\r\n" << data << "\r\n";
-    queueSend(fd, chunk.str());
+std::string normalizePath(const std::string &path) {
+    if (!path.empty() && path[path.size() - 1] == '/')
+        return path.substr(0, path.size() - 1);
+    return path;
 }
 
-// -----------------------------
-// URLエンコードフォーム対応
-// -----------------------------
+Server::LocationMatch Server::getLocationForUri(const std::string &uri) const {
+    LocationMatch bestMatch;
+    size_t bestLen = 0;
 
-static std::string joinPath(const std::string& a, const std::string& b) {
-    if (a.empty()) return b; // a が空なら b を返す
-    if (a[a.size()-1] == '/' && !b.empty() && b[0] == '/') {
-        return a + b.substr(1); // 両方スラッシュなら b の先頭を削除
-    }
-    if (a[a.size()-1] != '/' && !b.empty() && b[0] != '/') {
-        return a + "/" + b; // 両方スラッシュなしなら間に追加
-    }
-    return a + b; // それ以外はそのまま結合
-}
+    std::string normUri = normalizePath(uri);
 
-void Server::handleUrlEncodedForm(int clientFd, const Request &req,
-                                  const ServerConfig::Location* loc)
-{
-    // -----------------------------
-    // 1. フォームデータ解析
-    // -----------------------------
-    std::map<std::string, std::string> formData = parseUrlEncoded(req.body);
-
-    // -----------------------------
-    // 2. 保存先決定
-    // -----------------------------
-    std::string baseUploadPath;
-
-    if (loc && !loc->upload_path.empty()) {
-        baseUploadPath = loc->upload_path;
-    }
-    else if (loc && !loc->root.empty()) {
-        baseUploadPath = joinPath(loc->root, req.uri);
-    }
-    else if (!cfg.root.empty()) {
-        baseUploadPath = joinPath(cfg.root, req.uri);
-    }
-    else {
-        baseUploadPath = "/tmp/webserv_upload/";
-    }
-
-    // -----------------------------
-    // 3. HTMLレスポンスヘッダ送信
-    // -----------------------------
-    std::ostringstream hdr;
-    hdr << "HTTP/1.1 200 OK\r\n"
-        << "Content-Type: text/html\r\n"
-        << "Transfer-Encoding: chunked\r\n\r\n";
-    queueSend(clientFd, hdr.str());
-
-    std::ostringstream body;
-    body << "<html><body><h1>Form Received</h1><ul>";
-    queueSendChunk(clientFd, body.str());
-
-    // -----------------------------
-    // 4. データ保存 + HTML生成
-    // -----------------------------
-    for (std::map<std::string,std::string>::iterator it = formData.begin();
-         it != formData.end(); ++it)
+    for (std::map<std::string, ServerConfig::Location>::const_iterator it = cfg.location.begin();
+         it != cfg.location.end(); ++it)
     {
-        std::string safeName = sanitizeFileName(it->first + ".txt");
-        std::string savePath = baseUploadPath + "/" + safeName;
-
-        std::ofstream ofs(savePath.c_str(), std::ios::binary);
-        if (!ofs.is_open()) {
-            ResponseBuilder rb;
-
-            if (loc && loc->ret.count(500))
-                queueSend(clientFd, rb.buildErrorResponseFromFile(loc->ret.at(500), 500, true));
-            else if (cfg.errorPages.count(500))
-                queueSend(clientFd, rb.buildErrorResponseFromFile(cfg.errorPages.at(500), 500, true));
-            else
-                sendInternalServerError(clientFd);
-
-            return;
-        }
-        ofs.write(it->second.c_str(), it->second.size());
-        ofs.close();
-
-        std::ostringstream li;
-        li << "<li>" << it->first << " = " << it->second << "</li>";
-        queueSendChunk(clientFd, li.str());
-    }
-
-    // -----------------------------
-    // 5. HTMLレスポンス終了
-    // -----------------------------
-    body.str(""); body.clear();
-    body << "</ul></body></html>";
-    queueSendChunk(clientFd, body.str());
-
-    // 最終チャンク
-    queueSend(clientFd, "0\r\n\r\n");
-}
-
-
-// -----------------------------
-// multipartフォーム対応
-// -----------------------------
-
-void Server::handleMultipartForm(int clientFd, const Request &req, const ServerConfig::Location* loc) {
-    std::string contentType = req.headers.at("Content-Type");
-    std::vector<FilePart> files = parseMultipart(contentType, req.body);
-
-    // ヘッダ送信
-    std::ostringstream hdr;
-    hdr << "HTTP/1.1 200 OK\r\n"
-        << "Content-Type: text/html\r\n"
-        << "Transfer-Encoding: chunked\r\n\r\n";
-    queueSend(clientFd, hdr.str());
-
-    // ボディ開始
-    std::ostringstream body;
-    body << "<html><body><h1>Files Uploaded</h1><ul>";
-    queueSendChunk(clientFd, body.str());
-
-    std::string baseUploadPath;
-
-    // 1. location の upload_path
-    if (loc && !loc->upload_path.empty()) {
-        baseUploadPath = loc->upload_path;
-    }
-    // 2. location の root
-    else if (loc && !loc->root.empty()) {
-        baseUploadPath = joinPath(loc->root, req.uri);
-    }
-    // 3. サーバーデフォルト root
-    else if (!cfg.root.empty()) {
-        baseUploadPath = joinPath(cfg.root, req.uri);
-    }
-    // 4. どれも無ければ一時ディレクトリ
-    else {
-        baseUploadPath = "/tmp/webserv_upload/";
-    }
-
-
-    for (size_t i = 0; i < files.size(); ++i) {
-        std::string safeName = sanitizeFileName(files[i].filename);
-        std::string savePath = baseUploadPath + "/" + safeName;
-
-        std::ofstream ofs(savePath.c_str(), std::ios::binary);
-        if (!ofs.is_open()) {
-            ResponseBuilder rb;
-
-            if (loc && loc->ret.count(500))
-                queueSend(clientFd, rb.buildErrorResponseFromFile(loc->ret.at(500), 500, true));
-            else if (cfg.errorPages.count(500))
-                queueSend(clientFd, rb.buildErrorResponseFromFile(cfg.errorPages.at(500), 500, true));
-            else
-                sendInternalServerError(clientFd);
-
-            return;
-        }
-        ofs.write(files[i].content.c_str(), files[i].content.size());
-        ofs.close();
-
-        std::ostringstream li;
-        li << "<li>" << safeName << " (" << files[i].content.size() << " bytes)</li>";
-        queueSendChunk(clientFd, li.str());
-    }
-
-    body.str(""); body.clear();
-    body << "</ul></body></html>";
-    queueSendChunk(clientFd, body.str());
-
-    // 最終チャンク
-    queueSend(clientFd, "0\r\n\r\n");
-}
-
-// -----------------------------
-// ファイル名安全化補助
-// -----------------------------
-std::string Server::sanitizeFileName(const std::string &filename) {
-    std::string safe = filename;
-    for (size_t j = 0; j < safe.size(); ++j)
-        if (safe[j] == '/' || safe[j] == '\\') safe[j] = '_';
-
-    size_t pos;
-    while ((pos = safe.find("..")) != std::string::npos)
-        safe.replace(pos, 2, "__");
-
-    std::ostringstream uniqueName;
-    uniqueName << time(NULL) << "_" << safe;
-    return uniqueName.str();
-}
-
-// -----------------------------
-// multipart解析（現状のまま、ファイル名は後で安全化）
-// -----------------------------
-std::vector<FilePart> Server::parseMultipart(const std::string &contentType,
-                                             const std::string &body) {
-    std::vector<FilePart> parts;
-    size_t bpos = contentType.find("boundary=");
-    if (bpos == std::string::npos) return parts;
-    std::string boundary = contentType.substr(bpos + 9);
-
-    std::string delimiter = "--" + boundary;
-    size_t pos = 0, end;
-    while ((pos = body.find(delimiter, pos)) != std::string::npos) {
-        pos += delimiter.length();
-        if (body.compare(pos, 2, "--") == 0) break;
-        if (body.compare(pos, 2, "\r\n") == 0) pos += 2;
-
-        end = body.find(delimiter, pos);
-        std::string part = body.substr(pos, end - pos);
-
-        size_t headerEnd = part.find("\r\n\r\n");
-        if (headerEnd == std::string::npos) continue;
-
-        std::string headers = part.substr(0, headerEnd);
-        std::string content = part.substr(headerEnd + 4);
-        if (content.size() >= 2 && content.substr(content.size()-2) == "\r\n")
-            content.erase(content.size()-2);
-
-        size_t namePos = headers.find("name=\"");
-        if (namePos == std::string::npos) continue;
-        namePos += 6;
-        size_t nameEnd = headers.find("\"", namePos);
-        std::string name = headers.substr(namePos, nameEnd - namePos);
-
-        FilePart fp;
-        fp.name = name;
-
-        size_t filePos = headers.find("filename=\"");
-        if (filePos != std::string::npos) {
-            filePos += 10;
-            size_t fileEnd = headers.find("\"", filePos);
-            fp.filename = headers.substr(filePos, fileEnd - filePos);
-            fp.content = content;
-        } else {
-            fp.filename = "";
-            fp.content = content;
-        }
-        parts.push_back(fp);
-        pos = end;
-    }
-    return parts;
-}
-
-std::string Server::urlDecode(const std::string &str) {
-    std::string result;
-    for (size_t i = 0; i < str.size(); ++i) {
-        if (str[i] == '+') {
-            result += ' ';
-        } else if (str[i] == '%' && i + 2 < str.size()) {
-            char hex[3] = { str[i + 1], str[i + 2], '\0' };
-            if (isxdigit(hex[0]) && isxdigit(hex[1])) {
-                char decoded = static_cast<char>(strtol(hex, NULL, 16));
-                result += decoded;
-                i += 2;
-            } else {
-                result += '%'; // 不正な形式ならそのまま追加
+        std::string normLoc = normalizePath(it->first);
+        if (normUri.compare(0, normLoc.size(), normLoc) == 0) {
+            if (normLoc.size() > bestLen) {
+                bestLen = normLoc.size();
+                bestMatch.loc  = &it->second;
+                bestMatch.path = it->first; // 元のパスはそのまま
             }
-        } else {
-            result += str[i];
         }
     }
-    return result;
-}
-
-// URLエンコード解析
-std::map<std::string,std::string> Server::parseUrlEncoded(const std::string &body) {
-    std::map<std::string,std::string> data;
-    std::istringstream ss(body);
-    std::string pair;
-    while (std::getline(ss, pair, '&')) {
-        size_t eq = pair.find('=');
-        if (eq != std::string::npos) {
-            std::string key = urlDecode(pair.substr(0, eq));
-            std::string value = urlDecode(pair.substr(eq+1));
-            data[key] = value;
-        }
-    }
-    return data;
-}
-
-
-// --- ヘルパー：パスから拡張子を取得（ドットを含めて返す） ---
-static std::string getExtension(const std::string &path) {
-    // 最後のスラッシュ位置（ファイル名の先頭）
-    size_t lastSlash = path.find_last_of('/');
-    // 最後のドット位置
-    size_t lastDot = path.find_last_of('.');
-    if (lastDot == std::string::npos) {
-        // ドットが無い
-        return "";
-    }
-    // ドットがスラッシュより前なら拡張子ではない（例: /dir.name/file）
-    if (lastSlash != std::string::npos && lastDot < lastSlash) {
-        return "";
-    }
-    // 安全に substr を使う（dot を含めて返す）
-    return path.substr(lastDot);
+    return bestMatch;
 }
 
 bool Server::isCgiRequest(const Request &req) {
-    // クエリストリングを落とす (/foo.php?x=1 -> /foo.php)
+
+     // パーサー未実装 → loc に書き込まず、直接比較文字列を使用
+    const std::string cgiExt = ".php";
+
+    // 1. クエリストリングを落とす (/foo.php?x=1 -> /foo.php)
     std::string uri = req.uri;
     size_t q = uri.find('?');
     if (q != std::string::npos) {
         uri = uri.substr(0, q);
     }
 
-    std::string ext = getExtension(req.uri);
-    return (ext == ".php"); // いまはPHPだけCGI扱い
+    // 2. 最後の '.' を探す
+    size_t dot = uri.find_last_of('.');
+    if (dot == std::string::npos) {
+        // 拡張子が無い → CGIじゃない
+        return false;
+    }
+
+    std::string ext = uri.substr(dot); // ".php" とか
+    return (ext == cgiExt); // いまはPHPだけCGI扱い
 }
 
 // ----------------------------
 // CGI実行用関数
 // ----------------------------
 
-void Server::startCgiProcess(int clientFd, const Request &req) {
+std::pair<std::string, std::string> splitUri(const std::string& uri) {
+    size_t pos = uri.find('?');
+    if (pos == std::string::npos) {
+        return std::make_pair(uri, "");
+    } else {
+        return std::make_pair(uri.substr(0, pos), uri.substr(pos + 1));
+    }
+}
+
+void Server::startCgiProcess(int clientFd, const Request &req, const ServerConfig::Location& loc) {
     int inPipe[2], outPipe[2];
     if (pipe(inPipe) < 0 || pipe(outPipe) < 0) return;
 
@@ -680,13 +347,19 @@ void Server::startCgiProcess(int clientFd, const Request &req) {
         std::ostringstream len;
         len << req.body.size();
         setenv("CONTENT_LENGTH", len.str().c_str(), 1);
-        std::string scriptPath = root + req.uri;  // 例: /var/www/html/test.php
+        // URI 分割
+        std::pair<std::string, std::string> parts = splitUri(req.uri);
+        std::string path_only = parts.first;   // /cgi-bin/test_get.php
+        std::string query_str = parts.second;  // name=chatgpt&lang=ja
+        // SCRIPT_FILENAME 設定
+        std::string scriptPath = root + path_only;
         setenv("SCRIPT_FILENAME", scriptPath.c_str(), 1);
+        // QUERY_STRING 設定
+        setenv("QUERY_STRING", query_str.c_str(), 1);
         setenv("REDIRECT_STATUS", "200", 1);
         char *argv[] = { (char*)"php-cgi", NULL };
-        execve("/usr/bin/php-cgi", argv, environ);
-        // exit/_exit が使えないので失敗時は何もしない
-        // 子プロセスはそのまま残るが課題上は無視して良い
+        execve(loc.cgi_path.c_str(), argv, environ);
+        exit(1);
     }
 
     // --- 親プロセス ---
@@ -700,16 +373,6 @@ void Server::startCgiProcess(int clientFd, const Request &req) {
     if (!req.body.empty()) write(inPipe[1], req.body.c_str(), req.body.size());
     close(inPipe[1]);
 
-    int status;
-    pid_t result = waitpid(pid, &status, WNOHANG);
-    if (result == pid) { // 子プロセスはすでに終了
-        if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
-            // 子が異常終了していた → CGIエラー扱い
-            sendInternalServerError(clientFd);
-            return;
-        }
-    }
-
     // poll 監視に追加
     struct pollfd pfd;
     pfd.fd = outPipe[0];
@@ -721,24 +384,9 @@ void Server::startCgiProcess(int clientFd, const Request &req) {
     proc.clientFd = clientFd;
     proc.pid = pid;
     proc.outFd = outPipe[0];
+    proc.elapsedLoops = 0;
+    proc.startTime = time(NULL);
     cgiMap[outPipe[0]] = proc;
-}
-
-void Server::sendInternalServerError(int clientFd) {
-    std::ostringstream body;
-    body << "<html><body>"
-         << "<h1>500 Internal Server Error</h1>"
-         << "<p>The server encountered an unexpected condition.</p>"
-         << "</body></html>";
-
-    std::ostringstream res;
-    res << "HTTP/1.1 500 Internal Server Error\r\n"
-        << "Content-Type: text/html\r\n"
-        << "Content-Length: " << body.str().size() << "\r\n"
-        << "Connection: close\r\n\r\n"
-        << body.str();
-
-    queueSend(clientFd, res.str());
 }
 
 void Server::handleCgiOutput(int fd) {
@@ -746,78 +394,64 @@ void Server::handleCgiOutput(int fd) {
     ssize_t n = read(fd, buf, sizeof(buf));
 
     if (n > 0) {
-        CgiProcess &proc = cgiMap[fd];
-        proc.buffer.append(buf, n);  // 受信データをバッファに追加
+        cgiMap[fd].buffer.append(buf, n);
+        return;
+    }
 
-        // --- 最初のヘッダ送信 ---
-        if (!proc.headerSent) {
-            size_t headerEnd = proc.buffer.find("\r\n\r\n");
-            std::ostringstream hdr;
-
-            if (headerEnd != std::string::npos) {
-                // CGIがHTTPヘッダを送ってきた場合
-                std::string cgiHdr = proc.buffer.substr(0, headerEnd + 4);
-                hdr << cgiHdr
-                    << "Transfer-Encoding: chunked\r\n";
-                queueSend(proc.clientFd, hdr.str());
-                proc.buffer.erase(0, headerEnd + 4);
-            } else {
-                // ヘッダなし → 明示的に chunked で返す
-                hdr << "HTTP/1.1 200 OK\r\n"
-                    << "Content-Type: text/html\r\n"
-                    << "Transfer-Encoding: chunked\r\n\r\n";
-                queueSend(proc.clientFd, hdr.str());
-            }
-            proc.headerSent = true;
-        }
-
-        // --- データを chunked 形式で送信 ---
-        if (!proc.buffer.empty()) {
-            std::ostringstream chunk;
-            chunk << std::hex << proc.buffer.size() << "\r\n"
-                  << proc.buffer << "\r\n";
-            queueSend(proc.clientFd, chunk.str());
-            proc.buffer.clear();
-        }
-
-    } else if (n == 0) {
-        // --- EOF: 最終チャンク送信 ---
-        CgiProcess &proc = cgiMap[fd];
-        queueSend(proc.clientFd, "0\r\n\r\n");
-
+    if (n == 0) { // EOF
+        int clientFd = cgiMap[fd].clientFd;
+        // 関数を呼んでHTTPレスポンスを生成
+        std::string response = buildHttpResponseFromCgi(cgiMap[fd].buffer);
+        
+        // クライアントへ送信キューに追加
+        queueSend(clientFd, response);
         close(fd);
-        waitpid(proc.pid, NULL, 0);
+        waitpid(cgiMap[fd].pid, NULL, 0);
         cgiMap.erase(fd);
+    }
+}
 
+std::string Server::buildHttpResponseFromCgi(const std::string &cgiOutput) {
+    // CGIヘッダと本文を分離
+    size_t headerEnd = cgiOutput.find("\r\n\r\n");
+    std::string headers, content;
+    if (headerEnd != std::string::npos) {
+        headers = cgiOutput.substr(0, headerEnd);
+        content = cgiOutput.substr(headerEnd + 4);
     } else {
-        // --- read エラー時は 500 を返して CGI 処理を中止 ---
-        CgiProcess &proc = cgiMap[fd];
-        std::ostringstream body;
-        body << "<html><body><h1>500 Internal Server Error</h1>"
-             << "<p>CGI read failed.</p></body></html>";
-        std::ostringstream res;
-        res << "HTTP/1.1 500 Internal Server Error\r\n"
-            << "Content-Type: text/html\r\n"
-            << "Content-Length: " << body.str().size() << "\r\n"
-            << "Connection: close\r\n\r\n"
-            << body.str();
-        queueSend(proc.clientFd, res.str());
-
-        close(fd);
-        waitpid(proc.pid, NULL, 0);
-        cgiMap.erase(fd);
+        headers = cgiOutput;
     }
+
+    // --- Statusヘッダを探す ---
+    std::string statusLine = "HTTP/1.1 200 OK"; // デフォルト
+    size_t statusPos = headers.find("Status:");
+    if (statusPos != std::string::npos) {
+        size_t lineEnd = headers.find("\r\n", statusPos);
+        std::string statusValue = headers.substr(
+            statusPos + 7, lineEnd - (statusPos + 7));
+        // 前後の空白除去
+        size_t start = statusValue.find_first_not_of(" \t");
+        size_t end = statusValue.find_last_not_of(" \t");
+        if (start != std::string::npos && end != std::string::npos)
+            statusValue = statusValue.substr(start, end - start + 1);
+        statusLine = "HTTP/1.1 " + statusValue;
+        // "Status:" 行はHTTPレスポンスヘッダには不要なので削除
+        headers.erase(statusPos, lineEnd - statusPos + 2);
+    }
+
+    // --- HTTPレスポンスを組み立て ---
+    std::ostringstream oss;
+    oss << statusLine << "\r\n";
+    oss << "Content-Length: " << content.size() << "\r\n";
+    if (!headers.empty())
+        oss << headers << "\r\n";
+    oss << "\r\n";
+    oss << content;
+
+    return oss.str();
 }
 
-std::vector<int> Server::getCgiFds() const {
-    std::vector<int> fds;
-    for (std::map<int, CgiProcess>::const_iterator it = cgiMap.begin();
-         it != cgiMap.end(); ++it)
-    {
-        fds.push_back(it->first);
-    }
-    return fds;
-}
+
 
 // ----------------------------
 // クライアント送信処理
@@ -834,52 +468,28 @@ void Server::handleClientSend(int index) {
         ssize_t n = write(fd, client.sendBuffer.data(), client.sendBuffer.size());
         if (n > 0) {
             client.sendBuffer.erase(0, n);
-            std::cout << "[WRITE] fd=" << fd << " wrote=" << n
-                      << " remain=" << client.sendBuffer.size() << "\n";
-
             if (client.sendBuffer.empty()) {
-                // 送信キューが空になったので POLLOUT を落とす
-                fds[index].events &= ~POLLOUT;
-
-                // ★ここだけで閉じる（shouldClose のときのみ）
-                if (client.shouldClose) {
-                    handleConnectionClose(fd);
-                }
+                fds[index].events &= ~POLLOUT; // 送信完了 → POLLOUT 無効化
+                handleConnectionClose(fd);
             }
-        } else if (n < 0) {
-            std::cout << "[WRITE-ERR] fd=" << fd
-                      << " errno=" << errno << " (" << strerror(errno) << ")\n";
-            handleConnectionClose(fd);
-        } else {
-            std::cout << "[WRITE-EOF] fd=" << fd << "\n";
-            handleConnectionClose(fd);
-        }
+        } 
     }
-
-    // ★この後ろの「empty && shouldClose でも close」の重複ブロックは削除
 }
 
 // 送信キューにデータを追加する関数
 void Server::queueSend(int fd, const std::string &data) {
     std::map<int, ClientInfo>::iterator it = clients.find(fd);
     if (it != clients.end()) {
+        // 送信バッファにデータを追加
         it->second.sendBuffer += data;
 
-        bool found = false;
+        // POLLOUT を有効化して poll に送信させる
         for (int i = 1; i < nfds; i++) {
             if (fds[i].fd == fd) {
                 fds[i].events |= POLLOUT | POLLIN;
-                found = true;
                 break;
             }
         }
-        if (!found) {
-            std::cout << "[WARN] queueSend: fd not found in fds[] fd=" << fd << "\n";
-        } else {
-            std::cout << "[QUEUE] fd=" << fd << " queued=" << data.size() << " bytes\n";
-        }
-    } else {
-        std::cout << "[WARN] queueSend: unknown client fd=" << fd << "\n";
     }
 }
 
@@ -993,47 +603,5 @@ int Server::findIndexByFd(int fd) {
     return -1;
 }
 
-//-------------------------------------------
-void Server::checkCgiTimeouts(int maxLoops) {
-    std::map<int, CgiProcess>::iterator it = cgiMap.begin();
-    while (it != cgiMap.end()) {
-        it->second.elapsedLoops++;  // poll 1回ごとにカウント
-        if (it->second.elapsedLoops > maxLoops) {
-            // タイムアウトした CGI を強制終了
-            kill(it->second.pid, SIGKILL);
 
-            // 504 Gateway Timeout を返す
-            sendGatewayTimeout(it->second.clientFd);
 
-            // CGI 出力用の fd を閉じる
-            close(it->second.outFd);
-
-            // 子プロセスを回収
-            waitpid(it->second.pid, NULL, 0);
-
-            // map から削除
-            std::map<int, CgiProcess>::iterator tmp = it;
-            ++it; // 次の要素へ
-            cgiMap.erase(tmp); // erase は void なので注意
-        } else {
-            ++it;
-        }
-    }
-}
-
-void Server::sendGatewayTimeout(int clientFd) {
-    std::ostringstream body;
-    body << "<html><body>"
-         << "<h1>504 Gateway Timeout</h1>"
-         << "<p>The CGI script did not respond in time.</p>"
-         << "</body></html>";
-
-    std::ostringstream res;
-    res << "HTTP/1.1 504 Gateway Timeout\r\n"
-        << "Content-Type: text/html\r\n"
-        << "Content-Length: " << body.str().size() << "\r\n"
-        << "Connection: close\r\n\r\n"
-        << body.str();
-
-    queueSend(clientFd, res.str());
-}
