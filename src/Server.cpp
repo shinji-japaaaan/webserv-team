@@ -241,46 +241,61 @@ std::string generateUniqueFilename() {
     return oss.str();
 }
 
-void Server::handlePost(int fd, Request &req, const ServerConfig::Location* loc) {
-    if (!loc->upload_path.empty()) {
-        std::string filename = loc->upload_path + "/" + generateUniqueFilename();
-        std::ofstream ofs(filename.c_str(), std::ios::binary);
-        if (!ofs) {
-            std::string body = "Failed to save the file.\n";
-            std::stringstream ss;
-            ss << body.size();
-            std::string res =
-                "HTTP/1.1 500 Internal Server Error\r\n" +
-                std::string("Content-Length:") + ss.str() + "\r\n" +
-                "Content-Type:text/plain\r\n\r\n" +
-                body;
-            queueSend(fd, res);
-            return;
-        }
-        ofs << req.body;
-        ofs.close();
+std::string buildHttpResponse(int statusCode, const std::string &body,
+                              const std::string &contentType = "text/plain") {
+    std::stringstream ss;
+    ss << "HTTP/1.1 " << statusCode << " "
+       << (statusCode == 201 ? "Created" :
+           statusCode == 403 ? "Forbidden" :
+           statusCode == 500 ? "Internal Server Error" : "") << "\r\n";
+    ss << "Content-Length:" << body.size() << "\r\n";
+    ss << "Content-Type: " << contentType << "\r\n\r\n";
+    ss << body;
+    return ss.str();
+}
 
-        std::string body = "File uploaded successfully: " + filename + "\n";
-        std::stringstream ss;
-        ss << body.size();
-        std::string res =
-            "HTTP/1.1 201 Created\r\n" +
-            std::string("Content-Length:") + ss.str() + "\r\n" +
-            "Content-Type: text/plain\r\n\r\n" +
-            body;
-        queueSend(fd, res);
-    } else {
-        std::string body = "Upload path not configured.\n";
-        std::stringstream ss;
-        ss << body.size();
-        std::string res =
-            "HTTP/1.1 403 Forbidden\r\n" +
-            std::string("Content-Length:") + ss.str() + "\r\n" +
-            "Content-Type: text/plain\r\n\r\n" +
-            body;
-        queueSend(fd, res);
+void Server::handlePost(int fd, Request &req, const ServerConfig::Location* loc) {
+    std::string contentType;
+    if (req.headers.find("Content-Type") != req.headers.end())
+        contentType = req.headers.at("Content-Type");
+    else
+        contentType = "";
+
+    if (contentType.find("application/x-www-form-urlencoded") != std::string::npos) {
+        // handleUrlEncodedForm(fd, req, loc);
+        return;
+    } 
+    else if (contentType.find("multipart/form-data") != std::string::npos) {
+        handleMultipartForm(fd, req, loc);
+    } 
+    else {
+        std::string body = "Unsupported Content-Type: " + contentType + "\n";
+        queueSend(fd, buildHttpResponse(415, body));
     }
 }
+
+void Server::handleMultipartForm(int fd, Request &req, const ServerConfig::Location* loc) {
+    if (loc->upload_path.empty()) {
+        queueSend(fd, buildHttpResponse(403, "Upload path not configured.\n"));
+        return;
+    }
+
+    std::string filename = loc->upload_path + "/" + generateUniqueFilename();
+
+    std::ofstream ofs(filename.c_str(), std::ios::binary);
+    if (!ofs) {
+        queueSend(fd, buildHttpResponse(500, "Failed to save the file.\n"));
+        return;
+    }
+
+    ofs << req.body; // ※後で multipart を正しくパースしてから書き込む
+    ofs.close();
+
+    queueSend(fd, buildHttpResponse(201, "File uploaded successfully: " + filename + "\n"));
+}
+
+
+
 
 
 

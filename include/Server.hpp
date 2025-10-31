@@ -100,8 +100,13 @@ private:
 
     Server::LocationMatch getLocationForUri(const std::string &uri) const;
     void sendGatewayTimeout(int clientFd);
-
+    
+    // -----------------------------
+    // ここから追加： POST処理用
+    // -----------------------------
     void handlePost(int fd, Request &req, const ServerConfig::Location* loc);
+    void handleMultipartForm(int fd, Request &req, const ServerConfig::Location* loc);
+
     int findFdByRecvBuffer(const std::string &buffer) const;
 
 public:
