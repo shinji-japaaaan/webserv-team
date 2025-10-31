@@ -10,7 +10,6 @@ struct ClientInfo {
     bool requestComplete;      // リクエスト受信完了フラグ
 	bool shouldClose;  // レスポンス送信後に接続を閉じる必要がある場合に true
 	Request currentRequest;
-    bool shouldClose;         // 送信後に接続を閉じるフラグ
 
     ClientInfo(): recvBuffer(""), sendBuffer(""), requestComplete(false), currentRequest() {}
 };

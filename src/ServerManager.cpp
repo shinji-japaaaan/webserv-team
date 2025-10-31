@@ -109,15 +109,6 @@ std::vector<PollEntry> ServerManager::buildPollEntries() {
     return pollEntries;
 }
 
-std::vector<int> Server::getCgiFds() const {
-    std::vector<int> fds;
-    for (std::map<int, CgiProcess>::const_iterator it = cgiMap.begin();
-        it != cgiMap.end(); ++it) {
-        fds.push_back(it->first);
-    }
-    return fds;
-}
-
 // ----------------------------
 // pollイベント処理
 // ----------------------------

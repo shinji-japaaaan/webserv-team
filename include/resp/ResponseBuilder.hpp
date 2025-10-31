@@ -76,6 +76,12 @@ private:
         bool close);
     std::string guessContentType(const std::string &path) const;
     std::string httpDate_() const;
+
+  // ★ここを追加：内部用の3引数版は private ヘルパとして別名にする
+  std::string handleGetLikeCore(const Request&, const ServerConfig&,
+                                const ServerConfig::Location*);
+  std::string handleDeleteCore(const Request&, const ServerConfig&,
+                               const ServerConfig::Location*);
 };
 
 #endif // RESPONSE_BUILDER_HPP

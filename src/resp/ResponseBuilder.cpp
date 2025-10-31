@@ -8,6 +8,7 @@
 #include <ctime>
 #include <cerrno>
 #include <map>
+#include <cstring> 
 
 // ====== 便利関数======
 static bool isMethodAllowed(const std::string &m,
@@ -45,11 +46,12 @@ static bool isDirFs(const std::string& p){
     return S_ISDIR(st.st_mode);
 }
 
-static bool isRegFs(const std::string& p){
-    struct stat st;
-    if (stat(p.c_str(), &st) != 0) return false;
-    return S_ISREG(st.st_mode);
-}
+//使われていなかったので一旦コメントアウト
+// static bool isRegFs(const std::string& p){
+//     struct stat st;
+//     if (stat(p.c_str(), &st) != 0) return false;
+//     return S_ISREG(st.st_mode);
+// }
 
 static std::string joinPath(const std::string& a, const std::string& b){
     if (a.empty()) return b;
@@ -295,6 +297,32 @@ std::string ResponseBuilder::buildSimpleResponse(
     return res.str();
 }
 
+std::string ResponseBuilder::buildErrorResponseFromFile(
+    const std::string &path,
+    int code,
+    bool close
+) const {
+    std::ifstream ifs(path.c_str());
+    std::ostringstream body;
+
+    if (ifs.good()) {
+        body << ifs.rdbuf();
+    } else {
+        body << "<html><body><h1>" << code << " " << reasonPhrase(code)
+             << "</h1><p>Could not open custom error page.</p></body></html>";
+    }
+
+    std::ostringstream res;
+    res << "HTTP/1.1 " << code << " " << reasonPhrase(code) << "\r\n"
+        << "Content-Type: text/html\r\n"
+        << "Content-Length: " << body.str().size() << "\r\n"
+        << "Connection: " << (close ? "close" : "keep-alive") << "\r\n"
+        << "Date: " << httpDate_() << "\r\n"
+        << "Server: webserv/0.1\r\n\r\n"
+        << body.str();
+    return res.str();
+}
+
 std::string ResponseBuilder::buildSimpleResponse(
     int statusCode,
     const std::string &reason,
@@ -344,6 +372,67 @@ std::string ResponseBuilder::buildErrorResponse(
     return buildSimpleResponse(statusCode, reasonPhrase(statusCode), close); 
 }
 
+// --- GET/HEAD 処理 (3引数版) ---
+std::string ResponseBuilder::handleGetLikeCore(
+    const Request &req,
+    const ServerConfig &cfg,
+    const ServerConfig::Location *loc
+) {
+    if (isTraversal(req.uri)) {
+        return buildSimpleResponse(403, reasonPhrase(403), true);
+    }
+
+    // 最終的なルートを決定
+    std::string effectiveRoot = mergeRoots(cfg, loc);
+    bool isDirFlag = false;
+    std::string absPath = resolvePathForGet(effectiveRoot, req.uri, isDirFlag);
+
+    std::ifstream ifs(absPath.c_str(), std::ios::binary);
+    if (!ifs.is_open()) {
+        return buildErrorResponse(cfg, loc, 404);
+    }
+
+    bool headOnly = (req.method == "HEAD");
+    return buildOkResponseFromFile(absPath, headOnly, true);
+}
+
+// --- DELETE 処理 (3引数版) ---
+std::string ResponseBuilder::handleDeleteCore(
+    const Request &req,
+    const ServerConfig &cfg,
+    const ServerConfig::Location *loc
+) {
+    std::cout << "[DEBUG] DELETE uri=" << req.uri << std::endl;
+
+    if (isTraversal(req.uri)) {
+        std::cout << "[DEBUG] DELETE reject: traversal" << std::endl;
+        return buildErrorResponse(cfg, loc, 403, true);
+    }
+
+    std::string effectiveRoot = mergeRoots(cfg, loc);
+    std::string absPath = resolvePathForDelete(effectiveRoot, req.uri);
+    std::cout << "[DEBUG] DELETE resolved path=" << absPath << std::endl;
+
+    struct stat st;
+    if (stat(absPath.c_str(), &st) != 0) {
+        std::cout << "[DEBUG] DELETE stat failed: " << std::strerror(errno) << std::endl;
+        // ★ここ重要：404は buildErrorResponse で確実にボディ付き or カスタムページを返す
+        return buildErrorResponse(cfg, loc, 404, true);
+    }
+
+    if (unlink(absPath.c_str()) == 0) {
+        std::cout << "[DEBUG] DELETE ok -> 204" << std::endl;
+        return buildSimpleResponse(204, "No Content", true);
+    } else {
+        int err = errno;
+        std::cout << "[DEBUG] DELETE failed: " << std::strerror(err) << std::endl;
+        if (err == EACCES || err == EPERM) {
+            return buildErrorResponse(cfg, loc, 403, true);
+        }
+        return buildErrorResponse(cfg, loc, 500, true);
+    }
+}
+
 // GET / HEAD 処理
 // --- エントリーポイント ---
 std::string ResponseBuilder::generateResponse(
@@ -352,12 +441,12 @@ std::string ResponseBuilder::generateResponse(
     const ServerConfig::Location *loc,
     const std::string &locPath
 ) {
-    // 1. メソッド許可チェック
+    // 1. メソッド許可チェック (Location の method ディレクティブ)
     if (!isMethodAllowed(req.method, loc)) {
         return buildMethodNotAllowed(buildAllowHeader(loc), cfg);
     }
 
-    // 2. メソッド別ディスパッチ
+    // 2. メソッド毎に処理を振り分け
     if (req.method == "GET" || req.method == "HEAD") {
         return handleGetLike(req, cfg, loc, locPath);
     }
@@ -365,32 +454,40 @@ std::string ResponseBuilder::generateResponse(
         return handleDelete(req, cfg, loc, locPath);
     }
 
-    // 未サポートメソッドは405
+    // 未サポートメソッド
     return buildMethodNotAllowed(buildAllowHeader(loc), cfg);
 }
 
-// --- エントリーポイント ---
-// Server.cpp から呼ばれる
-std::string ResponseBuilder::generateResponse(
+// --- GET/HEAD (4引数版ラッパー) ---
+std::string ResponseBuilder::handleGetLike(
     const Request &req,
     const ServerConfig &cfg,
-	const ServerConfig::Location *loc,
+    const ServerConfig::Location *loc,
     const std::string &locPath
-)
-{
-    // 1. メソッド許可チェック
-    if (!isMethodAllowed(req.method, loc)) {
-        return buildMethodNotAllowed(buildAllowHeader(loc), cfg);
-    }
+) {
+    (void)locPath; // まだ使用していないが将来的に使う可能性あり
+    return handleGetLikeCore(req, cfg, loc); // 既存の3引数版を再利用
+}
 
-    // 2. メソッド別ディスパッチ
-    if (req.method == "GET" || req.method == "HEAD") {
-        return handleGetLike(req, cfg, loc, locPath);
-    }
-    if (req.method == "DELETE") {
-        return handleDelete(req, cfg, loc, locPath);
-    }
+// --- DELETE (4引数版ラッパー) ---
+std::string ResponseBuilder::handleDelete(
+    const Request &req,
+    const ServerConfig &cfg,
+    const ServerConfig::Location *loc,
+    const std::string &locPath
+) {
+    (void)loc; // Core で使うのでこのまま
+    // 1) locPath を剥がして相対URIを得る
+    std::string rel = stripLocationPrefix(req.uri, locPath);
 
-    // 未サポートメソッドは405
-    return buildMethodNotAllowed(buildAllowHeader(loc), cfg);
+    // 2) Core は `req.uri` を見るので、相対をセットした仮の Request を作る
+    Request tmp = req;
+    // 先頭に '/' を付けておくと joinPath で綺麗に繋がる
+    if (rel.empty() || rel[0] != '/')
+        tmp.uri = "/" + rel;
+    else
+        tmp.uri = rel;
+
+    // 3) 共通処理で物理パス解決 & unlink
+    return handleDeleteCore(tmp, cfg, loc);
 }

@@ -131,22 +131,28 @@ private:
     void handleCgiOutput(int outFd);
     void sendInternalServerError(int clientFd);
     void sendGatewayTimeout(int clientFd);
-    void checkCgiTimeouts(int maxLoops);
 
 public:
-    // --------------------------------
+    // -----------------------------
     // コンストラクタ / デストラクタ
-    // --------------------------------
+    // -----------------------------
     Server(const ServerConfig &config);
     ~Server();
 
-    // --------------------------------
-    // 初期化・メインループ関連
-    // --------------------------------
+    // -----------------------------
+    // 初期化 / メインループ
+    // -----------------------------
     bool init();
+
     int getServerFd() const;
     std::vector<int> getClientFds() const;
+
+    // ServerManager から呼ばれる安全な公開インターフェース
     void onPollEvent(int fd, short revents);
+
+    // ✅ 以下を public に追加！
+    std::vector<int> getCgiFds() const;      // CGI出力FDを返す
+    void checkCgiTimeouts(int maxLoops);     // CGIタイムアウト監視
 };
 
 #endif // SERVER_HPP

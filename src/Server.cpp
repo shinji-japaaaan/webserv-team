@@ -24,7 +24,6 @@ Server::Server(const ServerConfig &config)
 	// ★ここ大事：他の箇所で使うのでメンバにも入れておく
     host = config.host;
     root = config.root;
-    errorPages = config.errorPages;
 }
 
 // サーバー破棄（全クライアントFDクローズ）
@@ -226,18 +225,15 @@ void Server::handleClient(int index) {
     int fd = fds[index].fd;
     int bytes = recv(fd, buffer, sizeof(buffer) - 1, 0);
 
-    // 🔸 クライアント切断・エラー処理
     if (bytes <= 0) {
         handleDisconnect(fd, index, bytes);
         return;
     }
 
-    // 🔸 受信データをバッファに追加
     buffer[bytes] = '\0';
     clients[fd].recvBuffer.append(buffer);
 
     while (true) {
-        // 🔸 1リクエスト分を抽出
         std::string rawReq =
             extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
         if (rawReq.empty())
@@ -246,40 +242,46 @@ void Server::handleClient(int index) {
         Request &req = clients[fd].currentRequest;
         printRequest(req);
 
-        // 🔸 1. Locationマッチング
+        // Location解決
         LocationMatch m = getLocationForUri(req.uri);
-        const ServerConfig::Location *loc = m.loc;
-        const std::string &locPath = m.path;
+        const ServerConfig::Location* loc = m.loc;
+        const std::string& locPath = m.path;
 
-        // 🔸 2. ボディサイズ制限（Location優先）
+        // ボディサイズ制限
         size_t maxAllowed = clientMaxBodySize;
-        if (loc && loc->max_body_size > 0)
-            maxAllowed = loc->max_body_size;
-
+        if (loc && loc->max_body_size > 0) maxAllowed = loc->max_body_size;
         if (req.body.size() > maxAllowed) {
             ResponseBuilder rb;
             std::string resp = rb.buildSimpleResponse(413, "Payload Too Large", true);
-            queueSend(fd, resp);
-            clients[fd].shouldClose = true;
+            queueSend(fd, resp);                     // ★必ず送信キューに積む
+            clients[fd].shouldClose = true;          // ★close 指示は送信後
             clients[fd].recvBuffer.erase(0, rawReq.size());
             break;
         }
 
-        // 🔸 3. CGI判定（Location内だけ）
-        bool cgi = (loc && !loc->cgi_path.empty() && isCgiRequest(req));
-
+        // CGI or 通常
+        bool cgi = isCgiRequest(req);
         if (cgi) {
             startCgiProcess(fd, req);
-        } else if (req.method == "POST") {
-            handlePost(fd, req, loc);
         } else {
-            // 🔸 4. 通常レスポンス（locPath を渡す！）
-            ResponseBuilder rb;
-            std::string resp = rb.generateResponse(req, cfg, loc, locPath);
-            queueSend(fd, resp);
+    // --- 通常レスポンスの送信（デバッグ付） ---
+			ResponseBuilder rb;
+			std::string resp = rb.generateResponse(req, cfg, loc, locPath);
+
+			// ★デバッグ: 返すサイズと先頭行を出す
+			size_t eol = resp.find("\r\n");
+			std::string firstLine = (eol == std::string::npos) ? resp : resp.substr(0, eol);
+			std::cout << "[SEND] fd=" << fd
+					<< " bytes=" << resp.size()
+					<< " first-line=\"" << firstLine << "\"\n";
+
+			queueSend(fd, resp);
+
+			// ★デバッグ段階では必ずクローズ（keep-aliveは後で戻す）
+			clients[fd].shouldClose = true;
         }
 
-        // 🔸 5. 消費済みリクエストを削除
+        // 消費分を必ず削除
         clients[fd].recvBuffer.erase(0, rawReq.size());
     }
 }
@@ -807,6 +809,16 @@ void Server::handleCgiOutput(int fd) {
     }
 }
 
+std::vector<int> Server::getCgiFds() const {
+    std::vector<int> fds;
+    for (std::map<int, CgiProcess>::const_iterator it = cgiMap.begin();
+         it != cgiMap.end(); ++it)
+    {
+        fds.push_back(it->first);
+    }
+    return fds;
+}
+
 // ----------------------------
 // クライアント送信処理
 // ----------------------------
@@ -822,32 +834,52 @@ void Server::handleClientSend(int index) {
         ssize_t n = write(fd, client.sendBuffer.data(), client.sendBuffer.size());
         if (n > 0) {
             client.sendBuffer.erase(0, n);
+            std::cout << "[WRITE] fd=" << fd << " wrote=" << n
+                      << " remain=" << client.sendBuffer.size() << "\n";
+
             if (client.sendBuffer.empty()) {
-                fds[index].events &= ~POLLOUT; // 送信完了 → POLLOUT 無効化
-                handleConnectionClose(fd);
+                // 送信キューが空になったので POLLOUT を落とす
+                fds[index].events &= ~POLLOUT;
+
+                // ★ここだけで閉じる（shouldClose のときのみ）
+                if (client.shouldClose) {
+                    handleConnectionClose(fd);
+                }
             }
-        } 
+        } else if (n < 0) {
+            std::cout << "[WRITE-ERR] fd=" << fd
+                      << " errno=" << errno << " (" << strerror(errno) << ")\n";
+            handleConnectionClose(fd);
+        } else {
+            std::cout << "[WRITE-EOF] fd=" << fd << "\n";
+            handleConnectionClose(fd);
+        }
     }
-    if (clients[fd].sendBuffer.empty() && clients[fd].shouldClose) {
-        close(fd);
-        clients.erase(fd);
-    }
+
+    // ★この後ろの「empty && shouldClose でも close」の重複ブロックは削除
 }
 
 // 送信キューにデータを追加する関数
 void Server::queueSend(int fd, const std::string &data) {
     std::map<int, ClientInfo>::iterator it = clients.find(fd);
     if (it != clients.end()) {
-        // 送信バッファにデータを追加
         it->second.sendBuffer += data;
 
-        // POLLOUT を有効化して poll に送信させる
+        bool found = false;
         for (int i = 1; i < nfds; i++) {
             if (fds[i].fd == fd) {
                 fds[i].events |= POLLOUT | POLLIN;
+                found = true;
                 break;
             }
         }
+        if (!found) {
+            std::cout << "[WARN] queueSend: fd not found in fds[] fd=" << fd << "\n";
+        } else {
+            std::cout << "[QUEUE] fd=" << fd << " queued=" << data.size() << " bytes\n";
+        }
+    } else {
+        std::cout << "[WARN] queueSend: unknown client fd=" << fd << "\n";
     }
 }
 
