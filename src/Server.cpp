@@ -282,15 +282,26 @@ std::string extractBoundary(const std::string &contentType) {
 }
 
 std::vector<std::string> splitParts(const std::string &body,
-                                   const std::string &boundary) {
+                                    const std::string &boundary) {
     std::vector<std::string> parts;
     size_t start = 0, end;
 
     while ((end = body.find(boundary, start)) != std::string::npos) {
         std::string part = body.substr(start, end - start);
-        if (!part.empty()) parts.push_back(part);
+
+        // 末尾の余分な改行を削除
+        if (part.size() >= 2 && part.substr(part.size()-2) == "\r\n")
+            part.erase(part.size()-2);
+
+        // 空文字や Content-Disposition を持たないパートは無視
+        if (!part.empty() && part.find("Content-Disposition") != std::string::npos) {
+            parts.push_back(part);
+        }
+
         start = end + boundary.size();
+        if (body.substr(start, 2) == "--") break; // 終端ならループ終了
     }
+
     return parts;
 }
 
