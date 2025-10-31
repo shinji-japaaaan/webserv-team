@@ -184,7 +184,7 @@ void Server::handleClient(int index) {
 
         LocationMatch m = getLocationForUri(req.uri);
         const ServerConfig::Location *loc = m.loc;
-        // const std::string &locPath = m.path;
+        // const std::string &locPath = m.path;generateResponseでつかうのでけさない
         // printRequest(req);
         printf("Request complete from fd=%d\n", fd);
 
@@ -241,25 +241,192 @@ std::string generateUniqueFilename() {
     return oss.str();
 }
 
+std::string buildHttpResponse(int statusCode, const std::string &body,
+                              const std::string &contentType = "text/plain") {
+    std::stringstream ss;
+    ss << "HTTP/1.1 " << statusCode << " "
+       << (statusCode == 201 ? "Created" :
+           statusCode == 403 ? "Forbidden" :
+           statusCode == 500 ? "Internal Server Error" : "") << "\r\n";
+    ss << "Content-Length:" << body.size() << "\r\n";
+    ss << "Content-Type: " << contentType << "\r\n\r\n";
+    ss << body;
+    return ss.str();
+}
+
 void Server::handlePost(int fd, Request &req, const ServerConfig::Location* loc) {
+    std::string contentType;
+    if (req.headers.find("Content-Type") != req.headers.end())
+        contentType = req.headers.at("Content-Type");
+    else
+        contentType = "";
+
+    if (contentType.find("application/x-www-form-urlencoded") != std::string::npos) {
+        handleUrlEncodedForm(fd, req, loc);
+        return;
+    } 
+    else if (contentType.find("multipart/form-data") != std::string::npos) {
+        handleMultipartForm(fd, req, loc);
+    } 
+    else {
+        std::string body = "Unsupported Content-Type: " + contentType + "\n";
+        queueSend(fd, buildHttpResponse(415, body));
+    }
+}
+
+// URLデコード用
+std::string urlDecode(const std::string &str) {
+    std::string ret;
+    char hex[3] = {0};
+    for (size_t i = 0; i < str.size(); ++i) {
+        if (str[i] == '+') {
+            ret += ' ';
+        } else if (str[i] == '%' && i + 2 < str.size()) {
+            hex[0] = str[i + 1];
+            hex[1] = str[i + 2];
+            ret += static_cast<char>(strtol(hex, NULL, 16));
+            i += 2;
+        } else {
+            ret += str[i];
+        }
+    }
+    return ret;
+}
+
+// x-www-form-urlencoded を処理する関数
+void Server::handleUrlEncodedForm(int fd, Request &req, const ServerConfig::Location* loc) {
+    std::map<std::string, std::string> formData;
+    std::stringstream ss(req.body);
+    std::string pair;
+
+    // key=value に分解
+    while (std::getline(ss, pair, '&')) {
+        size_t eqPos = pair.find('=');
+        if (eqPos != std::string::npos) {
+            std::string key = urlDecode(pair.substr(0, eqPos));
+            std::string value = urlDecode(pair.substr(eqPos + 1));
+            formData[key] = value;
+        }
+    }
+
+    // ファイル保存パスが設定されていれば保存
     if (!loc->upload_path.empty()) {
-        std::string filename = loc->upload_path + "/" + generateUniqueFilename();
-        std::ofstream ofs(filename.c_str(), std::ios::binary);
+        std::ostringstream filenameStream;
+        filenameStream << loc->upload_path << "/form_" << time(NULL) << ".txt";
+        std::string filename = filenameStream.str();
+
+        std::ofstream ofs(filename.c_str());
         if (!ofs) {
-            std::string res = "HTTP/1.1 500 Internal Server Error\r\nContent-Length:0\r\n\r\n";
+            std::string res = buildHttpResponse(500, "Internal Server Error\n");
             queueSend(fd, res);
             return;
         }
-        ofs << req.body;
-        ofs.close();
 
-        std::string res = "HTTP/1.1 201 Created\r\nContent-Length:0\r\n\r\n";
-        queueSend(fd, res);
+        for (std::map<std::string, std::string>::const_iterator it = formData.begin();
+             it != formData.end(); ++it) {
+            ofs << it->first << "=" << it->second << "\n";
+        }
+        ofs.close();
+    }
+
+    std::string responseBody = "Form received successfully\n";
+    std::string res = buildHttpResponse(201, responseBody);
+    queueSend(fd, res);
+}
+
+std::string extractBoundary(const std::string &contentType) {
+    std::string key = "boundary=";
+    size_t pos = contentType.find(key);
+    if (pos == std::string::npos) return "";
+    return "--" + contentType.substr(pos + key.size());
+}
+
+std::vector<std::string> splitParts(const std::string &body,
+                                    const std::string &boundary) {
+    std::vector<std::string> parts;
+    size_t start = 0, end;
+
+    while ((end = body.find(boundary, start)) != std::string::npos) {
+        std::string part = body.substr(start, end - start);
+
+        // 末尾の余分な改行を削除
+        if (part.size() >= 2 && part.substr(part.size()-2) == "\r\n")
+            part.erase(part.size()-2);
+
+        // 空文字や Content-Disposition を持たないパートは無視
+        if (!part.empty() && part.find("Content-Disposition") != std::string::npos) {
+            parts.push_back(part);
+        }
+
+        start = end + boundary.size();
+        if (body.substr(start, 2) == "--") break; // 終端ならループ終了
+    }
+
+    return parts;
+}
+
+void parsePart(const std::string &part,
+               std::string &filename, std::string &content) {
+    size_t headerEnd = part.find("\r\n\r\n");
+    if (headerEnd == std::string::npos) return;
+
+    std::string header = part.substr(0, headerEnd);
+    content = part.substr(headerEnd + 4);
+
+    // filename 抽出
+    size_t pos = header.find("filename=\"");
+    if (pos != std::string::npos) {
+        pos += 10;
+        size_t end = header.find("\"", pos);
+        filename = header.substr(pos, end - pos);
     } else {
-        std::string res = "HTTP/1.1 403 Forbidden\r\nContent-Length:0\r\n\r\n";
-        queueSend(fd, res);
+        filename = "upload.bin";
     }
 }
+
+
+void Server::handleMultipartForm(int fd, Request &req, const ServerConfig::Location* loc) {
+    std::cerr << "=== Multipart Raw Body ===\n"
+          << req.body << "\n=========================\n";
+
+    if (loc->upload_path.empty()) {
+        queueSend(fd, buildHttpResponse(403, "Upload path not configured.\n"));
+        return;
+    }
+
+    std::string boundary = extractBoundary(req.headers["Content-Type"]);
+    if (boundary.empty()) {
+        queueSend(fd, buildHttpResponse(400, "Missing boundary in Content-Type.\n"));
+        return;
+    }
+
+    std::vector<std::string> parts = splitParts(req.body, boundary);
+    if (parts.empty()) {
+        queueSend(fd, buildHttpResponse(400, "No multipart data found.\n"));
+        return;
+    }
+
+    for (size_t i = 0; i < parts.size(); ++i) {
+        std::string filename, content;
+        parsePart(parts[i], filename, content);
+        std::string fullpath = loc->upload_path + "/" + filename;
+
+        std::ofstream ofs(fullpath.c_str(), std::ios::binary);
+        if (!ofs) {
+            queueSend(fd, buildHttpResponse(500, "Failed to open file.\n"));
+            return;
+        }
+        ofs.write(content.data(), content.size());
+        ofs.close();
+    }
+
+    queueSend(fd, buildHttpResponse(201, "File uploaded successfully.\n"));
+}
+
+
+
+
+
 
 
 bool Server::isMethodAllowed(const std::string &method,
@@ -272,6 +439,7 @@ bool Server::isMethodAllowed(const std::string &method,
 }
 
 std::string normalizePath(const std::string &path) {
+    if (path == "/") return "/";  // ルートはそのまま
     if (!path.empty() && path[path.size() - 1] == '/')
         return path.substr(0, path.size() - 1);
     return path;
@@ -287,6 +455,7 @@ Server::LocationMatch Server::getLocationForUri(const std::string &uri) const {
          it != cfg.location.end(); ++it)
     {
         std::string normLoc = normalizePath(it->first);
+        if (normLoc.empty()) normLoc = "/";
         if (normUri.compare(0, normLoc.size(), normLoc) == 0) {
             if (normLoc.size() > bestLen) {
                 bestLen = normLoc.size();
@@ -556,12 +725,39 @@ void Server::handleDisconnect(int fd, int index, int bytes) {
 
 std::string Server::extractNextRequest(std::string &recvBuffer,
                                        Request &currentRequest) {
-  RequestParser parser;
-  if (!parser.isRequestComplete(recvBuffer))
+    RequestParser parser;
+    if (!parser.isRequestComplete(recvBuffer))
     return "";
-  currentRequest = parser.parse(recvBuffer);
+    currentRequest = parser.parse(recvBuffer);
+    if (currentRequest.method == "POST" &&
+            currentRequest.headers.find("Content-Length") == currentRequest.headers.end()) 
+    {
+        int fd = findFdByRecvBuffer(recvBuffer); // recvBufferに紐付くfd取得
+        if (fd != -1) {
+            std::string res =
+                "HTTP/1.1 411 Length Required\r\n"
+                "Content-Length: 0\r\n\r\n";
+            queueSend(fd, res);
+        }
+
+        // recvBuffer からこのリクエスト分を削除
+        recvBuffer.erase(0, parser.getParsedLength());
+        return ""; // リクエスト未完扱いで handleClient 側には渡さない
+    }
   return recvBuffer.substr(0, parser.getParsedLength());
 }
+
+int Server::findFdByRecvBuffer(const std::string &buffer) const {
+    for (std::map<int, ClientInfo>::const_iterator it = clients.begin();
+         it != clients.end(); ++it) 
+    {
+        if (&(it->second.recvBuffer) == &buffer) {
+            return it->first; // fd を返す
+        }
+    }
+    return -1; // 見つからなければ -1
+}
+
 
 int Server::getServerFd() const {
     return serverFd;
