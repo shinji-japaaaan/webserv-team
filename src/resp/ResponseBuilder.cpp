@@ -8,6 +8,35 @@
 #include <ctime>
 #include <cerrno>
 #include <map>
+#include <cstring> 
+
+// ====== 便利関数======
+static bool isMethodAllowed(const std::string &m,
+                            const ServerConfig::Location *loc)
+{
+    if (!loc) return true; // Locationが無いなら全許可とみなす
+    if (loc->method.empty()) return true; // 空なら全許可
+
+    for (size_t i = 0; i < loc->method.size(); ++i) {
+        if (loc->method[i] == m)
+            return true;
+    }
+    return false;
+}
+
+static std::string buildAllowHeader(const ServerConfig::Location *loc) {
+    if (!loc || loc->method.empty()) {
+        // デフォルトは3メソッド全部
+        return "GET, HEAD, DELETE";
+    }
+    // loc->method を ", " で結合
+    std::ostringstream oss;
+    for (size_t i = 0; i < loc->method.size(); ++i) {
+        if (i) oss << ", ";
+        oss << loc->method[i];
+    }
+    return oss.str();
+}
 
 // ====== ローカルヘルパ ======
 
@@ -17,11 +46,12 @@ static bool isDirFs(const std::string& p){
     return S_ISDIR(st.st_mode);
 }
 
-static bool isRegFs(const std::string& p){
-    struct stat st;
-    if (stat(p.c_str(), &st) != 0) return false;
-    return S_ISREG(st.st_mode);
-}
+//使われていなかったので一旦コメントアウト
+// static bool isRegFs(const std::string& p){
+//     struct stat st;
+//     if (stat(p.c_str(), &st) != 0) return false;
+//     return S_ISREG(st.st_mode);
+// }
 
 static std::string joinPath(const std::string& a, const std::string& b){
     if (a.empty()) return b;
@@ -59,6 +89,63 @@ static std::string reasonPhrase(int code) {
         case 500: return "Internal Server Error";
     }
     return "Unknown";
+}
+
+// cfg.root と loc->root をマージして「最終的に使うルートディレクトリ」を決める。
+// ルール:
+//  - loc が無い→ cfg.root を返す
+//  - loc->root が空→ cfg.root を返す
+//  - loc->root が '/' で始まる → プロセスカレント直下扱い (ex: "/upload/" → "./upload/")
+//  - それ以外 → cfg.root と連結 (ex: cfg.root="./docs/", loc->root="img/" → "./docs/img/")
+std::string ResponseBuilder::mergeRoots(
+    const ServerConfig &cfg,
+    const ServerConfig::Location *loc
+) const {
+    if (!loc || loc->root.empty()) {
+        return cfg.root;
+    }
+
+    const std::string &lr = loc->root;
+
+    // case1: 絶対っぽい書き方 → プロジェクト直下フォルダ扱い
+    if (!lr.empty() && lr[0] == '/') {
+        // "/upload/" -> "./upload/"
+        std::string trimmed = lr;
+        // 先頭の'/'を削る
+        while (!trimmed.empty() && trimmed[0] == '/')
+            trimmed.erase(0, 1);
+        // "./" を頭につける
+        return std::string("./") + trimmed;
+    }
+
+    // case2: 相対 → サーバrootにぶら下げる
+    // joinPathは既にstaticヘルパとして定義済み
+    return joinPath(cfg.root, lr);
+}
+
+// URIからlocationのマウントパスを剥がして、ローカルでの相対パスにする.
+// 例: uri="/delete/test_delete.html", locPath="/delete/"
+// → "test_delete.html"
+// locPathが空なら、先頭の'/'を落としただけのパスにする
+std::string ResponseBuilder::stripLocationPrefix(
+    const std::string &uri,
+    const std::string &locPath
+) const {
+    if (!locPath.empty() &&
+        uri.compare(0, locPath.size(), locPath) == 0)
+    {
+        std::string rest = uri.substr(locPath.size());
+        // 先頭の'/'が二重にならないよう軽く整える
+        while (!rest.empty() && rest[0] == '/')
+            rest.erase(0,1);
+        return rest;
+    }
+
+    // fallback: "/"を外して相対に
+    std::string tmp = uri;
+    while (!tmp.empty() && tmp[0] == '/')
+        tmp.erase(0,1);
+    return tmp;
 }
 
 // ====== ResponseBuilder メンバ ======
@@ -195,7 +282,7 @@ std::string ResponseBuilder::buildSimpleResponse(
     const std::string &reason,
     bool close,
     const std::map<std::string, std::string> &extraHeaders
-) {
+) const {
     std::ostringstream res;
     res << "HTTP/1.1 " << statusCode << " " << reason << "\r\n";
     for (std::map<std::string,std::string>::const_iterator it = extraHeaders.begin();
@@ -210,88 +297,197 @@ std::string ResponseBuilder::buildSimpleResponse(
     return res.str();
 }
 
+std::string ResponseBuilder::buildErrorResponseFromFile(
+    const std::string &path,
+    int code,
+    bool close
+) const {
+    std::ifstream ifs(path.c_str());
+    std::ostringstream body;
+
+    if (ifs.good()) {
+        body << ifs.rdbuf();
+    } else {
+        body << "<html><body><h1>" << code << " " << reasonPhrase(code)
+             << "</h1><p>Could not open custom error page.</p></body></html>";
+    }
+
+    std::ostringstream res;
+    res << "HTTP/1.1 " << code << " " << reasonPhrase(code) << "\r\n"
+        << "Content-Type: text/html\r\n"
+        << "Content-Length: " << body.str().size() << "\r\n"
+        << "Connection: " << (close ? "close" : "keep-alive") << "\r\n"
+        << "Date: " << httpDate_() << "\r\n"
+        << "Server: webserv/0.1\r\n\r\n"
+        << body.str();
+    return res.str();
+}
+
 std::string ResponseBuilder::buildSimpleResponse(
     int statusCode,
     const std::string &reason,
     bool close
-) {
+) const{
     std::map<std::string,std::string> dummy;
     return buildSimpleResponse(statusCode, reason, close, dummy);
 }
 
-// GET / HEAD 処理
-std::string ResponseBuilder::handleGetLike(
+std::string ResponseBuilder::buildErrorResponse(
+    const ServerConfig &cfg,
+    const ServerConfig::Location* loc,
+    int statusCode,
+    bool close
+) const {
+    std::string filePath;
+
+    // 1. Location にカスタムページがある場合
+    if (loc && loc->ret.count(statusCode)) {
+        filePath = loc->ret.at(statusCode);
+    }
+    // 2. サーバ全体にカスタムページがある場合
+    else if (cfg.errorPages.count(statusCode)) {
+        filePath = cfg.errorPages.at(statusCode);
+    }
+
+    // ファイルがあれば返す
+    if (!filePath.empty()) {
+        std::ifstream ifs(filePath.c_str(), std::ios::binary);
+        if (ifs.is_open()) {
+            std::ostringstream oss;
+            oss << ifs.rdbuf();
+            std::string body = oss.str();
+            std::ostringstream res;
+            res << "HTTP/1.1 " << statusCode << " " << reasonPhrase(statusCode) << "\r\n"
+                << "Content-Type: text/html\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Connection: " << (close ? "close" : "keep-alive") << "\r\n"
+                << "Date: " << httpDate_() << "\r\n"
+                << "Server: webserv/0.1\r\n\r\n"
+                << body;
+            return res.str();
+        }
+    }
+
+    // ファイルがなければ従来どおりシンプル版
+    return buildSimpleResponse(statusCode, reasonPhrase(statusCode), close); 
+}
+
+// --- GET/HEAD 処理 (3引数版) ---
+std::string ResponseBuilder::handleGetLikeCore(
     const Request &req,
     const ServerConfig &cfg,
-    const ServerConfig::Location* loc
+    const ServerConfig::Location *loc
 ) {
-    (void)loc; // 今回は未使用。将来 location.root などを使うかもなので引数は残す
-    // ディレクトリトラバーサル対策
     if (isTraversal(req.uri)) {
         return buildSimpleResponse(403, reasonPhrase(403), true);
     }
 
+    // 最終的なルートを決定
+    std::string effectiveRoot = mergeRoots(cfg, loc);
     bool isDirFlag = false;
-    std::string absPath = resolvePathForGet(cfg.root, req.uri, isDirFlag);
+    std::string absPath = resolvePathForGet(effectiveRoot, req.uri, isDirFlag);
 
-    if (!isRegFs(absPath)) {
-        // カスタム404があればそれを返す、なければシンプル404
-        // いまはシンプル404（将来cfg.errorPages["404"]とか見てもいい）
-        return buildSimpleResponse(404, reasonPhrase(404), true);
+    std::ifstream ifs(absPath.c_str(), std::ios::binary);
+    if (!ifs.is_open()) {
+        return buildErrorResponse(cfg, loc, 404);
     }
 
     bool headOnly = (req.method == "HEAD");
     return buildOkResponseFromFile(absPath, headOnly, true);
 }
 
-// DELETE 処理
-std::string ResponseBuilder::handleDelete(
+// --- DELETE 処理 (3引数版) ---
+std::string ResponseBuilder::handleDeleteCore(
     const Request &req,
     const ServerConfig &cfg,
-    const ServerConfig::Location* loc
+    const ServerConfig::Location *loc
 ) {
-    (void)loc; // 今回は未使用。将来 location.root などを使うかもなので引数は残す
-    // トラバーサル対策
+    std::cout << "[DEBUG] DELETE uri=" << req.uri << std::endl;
+
     if (isTraversal(req.uri)) {
-        return buildSimpleResponse(403, reasonPhrase(403), true);
+        std::cout << "[DEBUG] DELETE reject: traversal" << std::endl;
+        return buildErrorResponse(cfg, loc, 403, true);
     }
 
-    std::string absPath = resolvePathForDelete(cfg.root, req.uri);
+    std::string effectiveRoot = mergeRoots(cfg, loc);
+    std::string absPath = resolvePathForDelete(effectiveRoot, req.uri);
+    std::cout << "[DEBUG] DELETE resolved path=" << absPath << std::endl;
 
-    // 対象が存在しないなら 404
-    if (!isRegFs(absPath)) {
-        return buildSimpleResponse(404, reasonPhrase(404), true);
+    struct stat st;
+    if (stat(absPath.c_str(), &st) != 0) {
+        std::cout << "[DEBUG] DELETE stat failed: " << std::strerror(errno) << std::endl;
+        // ★ここ重要：404は buildErrorResponse で確実にボディ付き or カスタムページを返す
+        return buildErrorResponse(cfg, loc, 404, true);
     }
 
-    // ファイル削除を試みる
     if (unlink(absPath.c_str()) == 0) {
-        // 成功 → 204 No Content
-        return buildSimpleResponse(204, reasonPhrase(204), true);
+        std::cout << "[DEBUG] DELETE ok -> 204" << std::endl;
+        return buildSimpleResponse(204, "No Content", true);
     } else {
-        // 失敗。権限なさそうなら403、それ以外は500でもいい
-        if (errno == EACCES || errno == EPERM) {
-            return buildSimpleResponse(403, reasonPhrase(403), true);
+        int err = errno;
+        std::cout << "[DEBUG] DELETE failed: " << std::strerror(err) << std::endl;
+        if (err == EACCES || err == EPERM) {
+            return buildErrorResponse(cfg, loc, 403, true);
         }
-        return buildSimpleResponse(500, reasonPhrase(500), true);
+        return buildErrorResponse(cfg, loc, 500, true);
     }
 }
 
+// GET / HEAD 処理
 // --- エントリーポイント ---
-// Server.cpp から呼ばれる
 std::string ResponseBuilder::generateResponse(
     const Request &req,
     const ServerConfig &cfg,
-    const ServerConfig::Location* loc
+    const ServerConfig::Location *loc,
+    const std::string &locPath
 ) {
-    // ここでメソッドごとの振り分けをする
-    if (req.method == "GET" || req.method == "HEAD") {
-        return handleGetLike(req, cfg, loc);
-    }
-    if (req.method == "DELETE") {
-        return handleDelete(req, cfg, loc);
+    // 1. メソッド許可チェック (Location の method ディレクティブ)
+    if (!isMethodAllowed(req.method, loc)) {
+        return buildMethodNotAllowed(buildAllowHeader(loc), cfg);
     }
 
-    // 許可されてないメソッドは405
-    // TODO: 将来 cfg.allowedMethods (locationごと) からAllowを組み立てる
-    return buildMethodNotAllowed("GET, HEAD, DELETE", cfg);
+    // 2. メソッド毎に処理を振り分け
+    if (req.method == "GET" || req.method == "HEAD") {
+        return handleGetLike(req, cfg, loc, locPath);
+    }
+    if (req.method == "DELETE") {
+        return handleDelete(req, cfg, loc, locPath);
+    }
+
+    // 未サポートメソッド
+    return buildMethodNotAllowed(buildAllowHeader(loc), cfg);
+}
+
+// --- GET/HEAD (4引数版ラッパー) ---
+std::string ResponseBuilder::handleGetLike(
+    const Request &req,
+    const ServerConfig &cfg,
+    const ServerConfig::Location *loc,
+    const std::string &locPath
+) {
+    (void)locPath; // まだ使用していないが将来的に使う可能性あり
+    return handleGetLikeCore(req, cfg, loc); // 既存の3引数版を再利用
+}
+
+// --- DELETE (4引数版ラッパー) ---
+std::string ResponseBuilder::handleDelete(
+    const Request &req,
+    const ServerConfig &cfg,
+    const ServerConfig::Location *loc,
+    const std::string &locPath
+) {
+    (void)loc; // Core で使うのでこのまま
+    // 1) locPath を剥がして相対URIを得る
+    std::string rel = stripLocationPrefix(req.uri, locPath);
+
+    // 2) Core は `req.uri` を見るので、相対をセットした仮の Request を作る
+    Request tmp = req;
+    // 先頭に '/' を付けておくと joinPath で綺麗に繋がる
+    if (rel.empty() || rel[0] != '/')
+        tmp.uri = "/" + rel;
+    else
+        tmp.uri = rel;
+
+    // 3) 共通処理で物理パス解決 & unlink
+    return handleDeleteCore(tmp, cfg, loc);
 }
