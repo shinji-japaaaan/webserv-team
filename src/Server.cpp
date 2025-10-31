@@ -174,15 +174,6 @@ void Server::handleClient(int index) {
     buffer[bytes] = '\0';
     clients[fd].recvBuffer.append(buffer);
 
-    LocationMatch m = getLocationForUri(clients[fd].currentRequest.uri);
-    const ServerConfig::Location* loc = m.loc;
-
-    // max_body_size チェック
-    if (!checkMaxBodySize(fd, bytes, loc)) {
-        handleDisconnect(fd, index, bytes);
-        return;
-    }
-
     // 1リクエストずつ処理
     while (true) {
         std::string requestStr = extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
@@ -192,6 +183,12 @@ void Server::handleClient(int index) {
         LocationMatch m = getLocationForUri(req.uri);
         const ServerConfig::Location *loc = m.loc;
         const std::string &locPath = m.path;
+
+        // 1リクエスト分の body が max_body_size を超えていないかチェック
+        if (!checkMaxBodySize(fd, req.body.size(), loc)) {
+            handleDisconnect(fd, index, 0);
+            break;
+        }
 
         printf("Request complete from fd=%d\n", fd);
 
