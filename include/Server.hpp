@@ -102,6 +102,7 @@ private:
     void sendGatewayTimeout(int clientFd);
 
     void handlePost(int fd, Request &req, const ServerConfig::Location* loc);
+    int findFdByRecvBuffer(const std::string &buffer) const;
 
 public:
     // -----------------------------

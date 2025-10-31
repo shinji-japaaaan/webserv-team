@@ -11,9 +11,15 @@ bool RequestParser::isRequestComplete(const std::string &buffer) {
     std::istringstream stream(headerPart);
     std::string line;
     while (std::getline(stream, line)) {
-        if (line.find("Content-Length:") == 0) {
-            contentLength = std::strtoul(line.substr(15).c_str(), NULL, 10);
-            break;
+        std::string key = line.substr(0, line.find(":"));
+        key.erase(0, key.find_first_not_of(" \t"));
+        key.erase(key.find_last_not_of(" \t") + 1);
+        std::transform(key.begin(), key.end(), key.begin(), ::tolower);
+        if (key == "content-length") {
+            std::string val = line.substr(line.find(":")+1);
+            val.erase(0, val.find_first_not_of(" \t"));
+            val.erase(val.find_last_not_of(" \t") + 1);
+            contentLength = std::strtoul(val.c_str(), NULL, 10);
         }
     }
 
@@ -26,76 +32,71 @@ RequestParser::RequestParser()
     : parsedLength(0){}
 
 Request RequestParser::parse(const std::string &buffer) {
-  Request req;
-  parsedLength = 0;
+    Request req;
+    parsedLength = 0;
 
-  // ヘッダー終了位置
-  size_t headerEnd = buffer.find("\r\n\r\n");
+    // ヘッダ終了位置
+    size_t headerEnd = buffer.find("\r\n\r\n");
+    if (headerEnd == std::string::npos)
+        return req;
 
-  std::string headerPart = buffer.substr(0, headerEnd);
-  std::string bodyPart = buffer.substr(headerEnd + 4); // header部分+\r\n\r\nがbody部分
+    std::string headerPart = buffer.substr(0, headerEnd);
+    std::string bodyPart = buffer.substr(headerEnd + 4);
 
-  std::istringstream stream(headerPart);
-  std::string line;
+    std::istringstream stream(headerPart);
+    std::string line;
 
-  // --- 1行目（リクエストライン） ---
-  if (!std::getline(stream, line))
-    return req;
-  {
+    // リクエストライン
+    if (!std::getline(stream, line))
+        return req;
+
     std::istringstream lineStream(line);
     lineStream >> req.method >> req.uri >> req.version;
-  }
-  // ✅ HTTPバージョンを確認
-  if (req.version != "HTTP/1.0" && req.version != "HTTP/1.1") {
-    std::cerr << "Unsupported HTTP version: " << req.version << std::endl;
-    req.method = "";  // 無効化（上位で検出できるように）
-    return req;       // バージョンが不正なので即リターン
-  }
 
-  // --- ヘッダー部 ---
-  std::string lastKey;
-  while (std::getline(stream, line)) {
-      if (line == "\r" || line.empty())
-          break;
-
-      // 折り返し行かチェック
-      if (!line.empty() && (line[0] == ' ' || line[0] == '\t')) {
-          if (!lastKey.empty()) {
-              // 前のヘッダーに値を追加
-              req.headers[lastKey] += " " + line.substr(1); // 先頭空白を除く
-          }
-          continue;
-      }
-
-      size_t pos = line.find(":");
-      if (pos == std::string::npos)
-          continue;
-
-      std::string key = line.substr(0, pos);
-      std::string value = line.substr(pos + 1);
-
-      // 前後空白のみ削除
-      key.erase(0, key.find_first_not_of(" \t"));
-      key.erase(key.find_last_not_of(" \t") + 1);
-
-      value.erase(0, value.find_first_not_of(" \t"));
-      value.erase(value.find_last_not_of(" \t\r") + 1);
-
-      req.headers[key] = value;
-      lastKey = key; // 次の折り返し行用に保持
-  }
-
-  // --- Body ---
-  std::map<std::string, std::string>::iterator it = req.headers.find("Content-Length");
-  if (it != req.headers.end()) {
-    size_t len = static_cast<size_t>(std::strtoul(it->second.c_str(), NULL, 10));
-    if (bodyPart.size() >= len) {
-      req.body = bodyPart.substr(0, len);
+    if (req.version != "HTTP/1.0" && req.version != "HTTP/1.1") {
+        req.method.clear();
+        return req;
     }
-  }
 
-  parsedLength = headerEnd + 4 + req.body.size();
-  return req;
+    // ヘッダ解析
+    std::string lastKey;
+    while (std::getline(stream, line)) {
+        if (line.empty() || line == "\r") break;
+
+        if (!line.empty() && (line[0] == ' ' || line[0] == '\t')) {
+            if (!lastKey.empty())
+                req.headers[lastKey] += " " + line.substr(1);
+            continue;
+        }
+
+        size_t pos = line.find(":");
+        if (pos == std::string::npos) continue;
+
+        std::string key = line.substr(0, pos);
+        std::string value = line.substr(pos + 1);
+
+        key.erase(0, key.find_first_not_of(" \t"));
+        key.erase(key.find_last_not_of(" \t") + 1);
+        value.erase(0, value.find_first_not_of(" \t"));
+        value.erase(value.find_last_not_of(" \t\r") + 1);
+
+        req.headers[key] = value;
+        lastKey = key;
+    }
+
+    // Body処理
+    std::map<std::string, std::string>::iterator it = req.headers.find("Content-Length");
+    if (it != req.headers.end()) {
+        size_t contentLength = std::strtoul(it->second.c_str(), NULL, 10);
+        if (bodyPart.size() >= contentLength) {
+            req.body = bodyPart.substr(0, contentLength);
+            parsedLength = headerEnd + 4 + contentLength;
+        }
+    } else {
+        parsedLength = headerEnd + 4;
+    }
+
+    return req;
 }
 
 // void printRequest(const Request &req) {

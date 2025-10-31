@@ -246,20 +246,42 @@ void Server::handlePost(int fd, Request &req, const ServerConfig::Location* loc)
         std::string filename = loc->upload_path + "/" + generateUniqueFilename();
         std::ofstream ofs(filename.c_str(), std::ios::binary);
         if (!ofs) {
-            std::string res = "HTTP/1.1 500 Internal Server Error\r\nContent-Length:0\r\n\r\n";
+            std::string body = "Failed to save the file.\n";
+            std::stringstream ss;
+            ss << body.size();
+            std::string res =
+                "HTTP/1.1 500 Internal Server Error\r\n" +
+                std::string("Content-Length:") + ss.str() + "\r\n" +
+                "Content-Type:text/plain\r\n\r\n" +
+                body;
             queueSend(fd, res);
             return;
         }
         ofs << req.body;
         ofs.close();
 
-        std::string res = "HTTP/1.1 201 Created\r\nContent-Length:0\r\n\r\n";
+        std::string body = "File uploaded successfully: " + filename + "\n";
+        std::stringstream ss;
+        ss << body.size();
+        std::string res =
+            "HTTP/1.1 201 Created\r\n" +
+            std::string("Content-Length:") + ss.str() + "\r\n" +
+            "Content-Type: text/plain\r\n\r\n" +
+            body;
         queueSend(fd, res);
     } else {
-        std::string res = "HTTP/1.1 403 Forbidden\r\nContent-Length:0\r\n\r\n";
+        std::string body = "Upload path not configured.\n";
+        std::stringstream ss;
+        ss << body.size();
+        std::string res =
+            "HTTP/1.1 403 Forbidden\r\n" +
+            std::string("Content-Length:") + ss.str() + "\r\n" +
+            "Content-Type: text/plain\r\n\r\n" +
+            body;
         queueSend(fd, res);
     }
 }
+
 
 
 bool Server::isMethodAllowed(const std::string &method,
@@ -557,12 +579,39 @@ void Server::handleDisconnect(int fd, int index, int bytes) {
 
 std::string Server::extractNextRequest(std::string &recvBuffer,
                                        Request &currentRequest) {
-  RequestParser parser;
-  if (!parser.isRequestComplete(recvBuffer))
+    RequestParser parser;
+    if (!parser.isRequestComplete(recvBuffer))
     return "";
-  currentRequest = parser.parse(recvBuffer);
+    currentRequest = parser.parse(recvBuffer);
+    if (currentRequest.method == "POST" &&
+            currentRequest.headers.find("Content-Length") == currentRequest.headers.end()) 
+    {
+        int fd = findFdByRecvBuffer(recvBuffer); // recvBufferに紐付くfd取得
+        if (fd != -1) {
+            std::string res =
+                "HTTP/1.1 411 Length Required\r\n"
+                "Content-Length: 0\r\n\r\n";
+            queueSend(fd, res);
+        }
+
+        // recvBuffer からこのリクエスト分を削除
+        recvBuffer.erase(0, parser.getParsedLength());
+        return ""; // リクエスト未完扱いで handleClient 側には渡さない
+    }
   return recvBuffer.substr(0, parser.getParsedLength());
 }
+
+int Server::findFdByRecvBuffer(const std::string &buffer) const {
+    for (std::map<int, ClientInfo>::const_iterator it = clients.begin();
+         it != clients.end(); ++it) 
+    {
+        if (&(it->second.recvBuffer) == &buffer) {
+            return it->first; // fd を返す
+        }
+    }
+    return -1; // 見つからなければ -1
+}
+
 
 int Server::getServerFd() const {
     return serverFd;
