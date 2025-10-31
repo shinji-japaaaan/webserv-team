@@ -122,7 +122,8 @@ public:
     void onPollEvent(int fd, short revents);
 
     std::vector<int> getCgiFds() const;                 // 現在監視中のCGI出力FDリスト
-    void checkCgiTimeouts(int maxLoops);  
+    void checkCgiTimeouts(int maxLoops); 
+    bool hasPendingSend(int fd) const;
 };
 
 #endif

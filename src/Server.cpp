@@ -184,7 +184,7 @@ void Server::handleClient(int index) {
 
         LocationMatch m = getLocationForUri(req.uri);
         const ServerConfig::Location *loc = m.loc;
-        // const std::string &locPath = m.path;
+        // const std::string &locPath = m.path;generateResponseでつかうのでけさない
         // printRequest(req);
         printf("Request complete from fd=%d\n", fd);
 
@@ -287,6 +287,7 @@ Server::LocationMatch Server::getLocationForUri(const std::string &uri) const {
          it != cfg.location.end(); ++it)
     {
         std::string normLoc = normalizePath(it->first);
+        if (normLoc.empty()) normLoc = "/";
         if (normUri.compare(0, normLoc.size(), normLoc) == 0) {
             if (normLoc.size() > bestLen) {
                 bestLen = normLoc.size();

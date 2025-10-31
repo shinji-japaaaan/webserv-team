@@ -67,6 +67,7 @@
 		"ostream": "cpp",
 		"sstream": "cpp",
 		"cinttypes": "cpp",
-		"set": "cpp"
+		"set": "cpp",
+		"iomanip": "cpp"
 	}
 }

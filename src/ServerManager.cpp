@@ -44,12 +44,17 @@ void ServerManager::runAllServers() {
 
     while (true) {
         std::vector<PollEntry> entries = buildPollEntries();
-        if (entries.empty()) continue;
-
         struct pollfd* fds = new struct pollfd[entries.size()];
         for (size_t i = 0; i < entries.size(); i++) {
             fds[i].fd = entries[i].fd;
             fds[i].events = entries[i].events;
+
+            // サーバーが送信バッファを持っていれば POLLOUT を追加
+            Server* srv = entries[i].server;
+            if (srv->hasPendingSend(entries[i].fd)) {
+                fds[i].events |= POLLOUT;
+            }
+
             fds[i].revents = 0;
         }
 
@@ -71,6 +76,12 @@ void ServerManager::runAllServers() {
     }
 }
 
+// 送信待ちデータがあるか確認
+bool Server::hasPendingSend(int fd) const {
+    std::map<int, ClientInfo>::const_iterator it = clients.find(fd);
+    if (it == clients.end()) return false;  // fd が存在しない場合は false
+    return !it->second.sendBuffer.empty();  // sendBuffer が空でなければ true
+}
 
 void Server::checkCgiTimeouts(int timeoutSeconds) {
     time_t now = time(NULL);
