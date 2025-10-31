@@ -184,7 +184,7 @@ void Server::handleClient(int index) {
 
         LocationMatch m = getLocationForUri(req.uri);
         const ServerConfig::Location *loc = m.loc;
-        // const std::string &locPath = m.path;generateResponseでつかうのでけさない
+        const std::string &locPath = m.path;
         // printRequest(req);
         printf("Request complete from fd=%d\n", fd);
 
@@ -205,7 +205,7 @@ void Server::handleClient(int index) {
             handlePost(fd, req, loc);
         } else {
             ResponseBuilder rb;
-            std::string response = rb.generateResponse(req, cfg, loc);
+            std::string response = rb.generateResponse(req, cfg, loc, locPath);
             queueSend(fd, response);
         }
 
