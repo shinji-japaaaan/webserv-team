@@ -12,7 +12,7 @@ struct ClientInfo {
 	Request currentRequest;
     size_t receivedBodySize; // 受信したボディのサイズ
 
-    ClientInfo(): recvBuffer(""), sendBuffer(""), requestComplete(false), currentRequest() {}
+    ClientInfo(): recvBuffer(""), sendBuffer(""), requestComplete(false), currentRequest(), receivedBodySize(0) {}
 };
 
 #endif
