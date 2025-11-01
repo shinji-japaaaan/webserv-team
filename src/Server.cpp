@@ -304,8 +304,8 @@ std::string buildHttpResponse(int statusCode, const std::string &body,
 
 void Server::handlePost(int fd, Request &req, const ServerConfig::Location* loc) {
     std::string contentType;
-    if (req.headers.find("Content-Type") != req.headers.end())
-        contentType = req.headers.at("Content-Type");
+    if (req.headers.find("content-type") != req.headers.end())
+        contentType = req.headers.at("content-type");
     else
         contentType = "";
     
@@ -893,27 +893,30 @@ void Server::handleDisconnect(int fd, int index, int bytes) {
 // ----------------------------
 
 std::string Server::extractNextRequest(std::string &recvBuffer,
-                                       Request &currentRequest) {
-  RequestParser parser;
-  if (!parser.isRequestComplete(recvBuffer))
-    return "";
-    currentRequest = parser.parse(recvBuffer);
-    if (currentRequest.method == "POST" &&
-        currentRequest.headers.find("content-length") == currentRequest.headers.end() &&
-        currentRequest.headers.find("transfer-encoding") == currentRequest.headers.end())
-    {
-        int fd = findFdByRecvBuffer(recvBuffer);
-        if (fd != -1) {
-            std::string res =
-                "HTTP/1.1 411 Length Required\r\n"
-                "Content-Length: 0\r\n\r\n";
-            queueSend(fd, res);
-        }
+									   Request &currentRequest) {
+	RequestParser parser;
+	if (!parser.isRequestComplete(recvBuffer))
+		return "";
 
-        recvBuffer.erase(0, parser.getParsedLength());
-        return "";
-    }
-    return recvBuffer.substr(0, parser.getParsedLength());
+	currentRequest = parser.parse(recvBuffer);
+
+	if (currentRequest.method == "POST" &&
+		currentRequest.headers.find("content-length") == currentRequest.headers.end() &&
+		currentRequest.headers.find("transfer-encoding") == currentRequest.headers.end()) 
+	{
+		int fd = findFdByRecvBuffer(recvBuffer);
+		if (fd != -1) {
+			std::string res =
+				"HTTP/1.1 411 Length Required\r\n"
+				"Content-Length: 0\r\n\r\n";
+			queueSend(fd, res);
+		}
+
+		recvBuffer.erase(0, parser.getParsedLength());
+		return "";
+	}
+
+	return recvBuffer.substr(0, parser.getParsedLength());
 }
 
 int Server::findFdByRecvBuffer(const std::string &buffer) const {

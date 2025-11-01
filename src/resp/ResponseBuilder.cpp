@@ -372,6 +372,71 @@ std::string ResponseBuilder::buildErrorResponse(
     return buildSimpleResponse(statusCode, reasonPhrase(statusCode), close); 
 }
 
+#include <string>
+#include <sstream>
+#include <dirent.h>
+#include <sys/stat.h>
+
+std::string buildAutoIndexHtml(const std::string &dirPath, const std::string &uri) {
+    std::stringstream html;
+    html << "<html><head><title>Index of " << uri << "</title></head>";
+    html << "<body><h1>Index of " << uri << "</h1><ul>";
+
+    DIR *dir = opendir(dirPath.c_str());
+    if (!dir) {
+        // ディレクトリが開けなければ 403 として扱う（呼び出し側で処理可）
+        return "";
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        std::string name = entry->d_name;
+
+        // 「.」と「..」は表示しない
+        if (name == "." || name == "..")
+            continue;
+
+        // パス組み立て
+        std::string fullPath = dirPath + "/" + name;
+
+        struct stat st;
+        if (stat(fullPath.c_str(), &st) != 0)
+            continue;
+
+        // ディレクトリは末尾に /
+        if (S_ISDIR(st.st_mode))
+            name += "/";
+
+        html << "<li><a href=\"" << uri;
+        if (!uri.empty() && uri[uri.size() - 1] != '/')
+            html << "/";
+        html << name << "\">" << name << "</a></li>";
+    }
+
+    closedir(dir);
+
+    html << "</ul><hr><address>Webserv/1.0</address></body></html>";
+    return html.str();
+}
+
+std::string buildOkResponseFromString(const std::string &body, const std::string &contentType) {
+    std::stringstream response;
+
+    // ステータスライン
+    response << "HTTP/1.1 200 OK\r\n";
+
+    // ヘッダ
+    response << "Content-Type: " << contentType << "\r\n";
+    response << "Content-Length: " << body.size() << "\r\n";
+    response << "Connection: close\r\n"; // keep-alive未対応の場合
+    response << "\r\n"; // ヘッダ終端
+
+    // ボディ
+    response << body;
+
+    return response.str();
+}
+
 // --- GET/HEAD 処理 (3引数版) ---
 std::string ResponseBuilder::handleGetLikeCore(
     const Request &req,
@@ -386,6 +451,15 @@ std::string ResponseBuilder::handleGetLikeCore(
     std::string effectiveRoot = mergeRoots(cfg, loc);
     bool isDirFlag = false;
     std::string absPath = resolvePathForGet(effectiveRoot, req.uri, isDirFlag);
+
+    if (isDirFlag) {
+        if (loc->autoindex == "on") {
+            std::string body = buildAutoIndexHtml(absPath, req.uri);
+            return buildOkResponseFromString(body, "text/html");
+        } else {
+            return buildErrorResponse(cfg, loc, 403);
+        }
+    }
 
     std::ifstream ifs(absPath.c_str(), std::ios::binary);
     if (!ifs.is_open()) {
