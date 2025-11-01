@@ -291,37 +291,87 @@ std::string generateUniqueFilename() {
 
 std::string buildHttpResponse(int statusCode, const std::string &body,
                               const std::string &contentType = "text/plain") {
-  std::stringstream ss;
-  ss << "HTTP/1.1 " << statusCode << " "
-     << (statusCode == 201   ? "Created"
-         : statusCode == 403 ? "Forbidden"
-         : statusCode == 500 ? "Internal Server Error"
-                             : "")
-     << "\r\n";
-  ss << "Content-Length:" << body.size() << "\r\n";
-  ss << "Content-Type: " << contentType << "\r\n\r\n";
-  ss << body;
-  return ss.str();
+    std::stringstream ss;
+    ss << "HTTP/1.1 " << statusCode << " "
+       << (statusCode == 201 ? "Created" :
+           statusCode == 403 ? "Forbidden" :
+           statusCode == 500 ? "Internal Server Error" : "") << "\r\n";
+    ss << "Content-Length:" << body.size() << "\r\n";
+    ss << "Content-Type: " << contentType << "\r\n\r\n";
+    ss << body;
+    return ss.str();
 }
 
-void Server::handlePost(int fd, Request &req,
-                        const ServerConfig::Location *loc) {
-  std::string contentType;
-  if (req.headers.find("Content-Type") != req.headers.end())
-    contentType = req.headers.at("Content-Type");
-  else
-    contentType = "";
+void Server::handlePost(int fd, Request &req, const ServerConfig::Location* loc) {
+    std::string contentType;
+    if (req.headers.find("Content-Type") != req.headers.end())
+        contentType = req.headers.at("Content-Type");
+    else
+        contentType = "";
+    
+    bool isChunked = false;
+    std::map<std::string, std::string>::iterator it = req.headers.find("transfer-encoding");
+    if (it != req.headers.end() && it->second.find("chunked") != std::string::npos)
+        isChunked = true;    
+    if (isChunked) {
+        handleChunkedBody(fd, req, loc);
+        return;
+    }
 
-  if (contentType.find("application/x-www-form-urlencoded") !=
-      std::string::npos) {
-    handleUrlEncodedForm(fd, req, loc);
-    return;
-  } else if (contentType.find("multipart/form-data") != std::string::npos) {
-    handleMultipartForm(fd, req, loc);
-  } else {
-    std::string body = "Unsupported Content-Type: " + contentType + "\n";
-    queueSend(fd, buildHttpResponse(415, body));
-  }
+    if (contentType.find("application/x-www-form-urlencoded") != std::string::npos) {
+        handleUrlEncodedForm(fd, req, loc);
+        return;
+    } 
+    else if (contentType.find("multipart/form-data") != std::string::npos) {
+        handleMultipartForm(fd, req, loc);
+    } 
+    else {
+        std::string body = "Unsupported Content-Type: " + contentType + "\n";
+        queueSend(fd, buildHttpResponse(415, body));
+    }
+}
+
+void saveBodyToFile(const std::string &body, const std::string &uploadDir) {
+    // 現在時刻
+    std::time_t t = std::time(NULL);
+    std::tm tm = *std::localtime(&t);
+
+    // ファイル名生成
+    std::ostringstream oss;
+    oss << uploadDir;
+    if (!uploadDir.empty() && uploadDir[uploadDir.size()-1] != '/' && uploadDir[uploadDir.size()-1] != '\\')
+        oss << '/';
+
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &tm);
+    oss << "POST_" << buf;
+
+    static int counter = 0;
+    oss << "_" << counter++ << ".txt";
+
+    std::string filename = oss.str();
+
+    std::ofstream ofs(filename.c_str(), std::ios::binary);
+    if (!ofs.is_open()) {
+        std::cerr << "Failed to open file for writing: " << filename << std::endl;
+        return;
+    }
+
+    ofs.write(body.c_str(), body.size());
+    ofs.close();
+
+    std::cout << "[INFO] Saved POST body to: " << filename << std::endl;
+}
+
+void Server::handleChunkedBody(int fd, Request &req, const ServerConfig::Location* loc) {
+    // すでに unchunk された req.body を使って処理
+    // 例: ファイル保存や CGI に渡すなど
+    if (loc->upload_path.empty()) {
+        queueSend(fd, buildHttpResponse(200, "Chunked data received\n"));
+    } else {
+        saveBodyToFile(req.body, loc->upload_path);
+        queueSend(fd, buildHttpResponse(201, "File saved\n"));
+    }
 }
 
 // URLデコード用
@@ -549,73 +599,135 @@ bool Server::isCgiRequest(const Request &req) {
 // CGI実行用関数
 // ----------------------------
 
-std::pair<std::string, std::string> splitUri(const std::string &uri) {
-  size_t pos = uri.find('?');
-  if (pos == std::string::npos) {
-    return std::make_pair(uri, "");
-  } else {
-    return std::make_pair(uri.substr(0, pos), uri.substr(pos + 1));
-  }
+std::pair<std::string, std::string> splitUri(const std::string& uri) {
+    size_t pos = uri.find('?');
+    if (pos == std::string::npos) {
+        return std::make_pair(uri, "");
+    } else {
+        return std::make_pair(uri.substr(0, pos), uri.substr(pos + 1));
+    }
 }
 
-void Server::startCgiProcess(int clientFd, const Request &req,
-                             const ServerConfig::Location &loc) {
-  int inPipe[2], outPipe[2];
-  if (pipe(inPipe) < 0 || pipe(outPipe) < 0)
-    return;
+// 外部関数（Serverクラス外でも良い）
+std::pair<std::string, std::string> buildCgiScriptPath(
+    const std::string &uri,
+    const ServerConfig::Location &loc,
+    const std::map<std::string, ServerConfig::Location> &locations)
+{
+    std::pair<std::string, std::string> parts = splitUri(uri);
+    std::string path_only = parts.first;
+    std::string query_str = parts.second;
 
-  pid_t pid = fork();
-  if (pid == 0) { // --- 子プロセス ---
-    dup2(inPipe[0], STDIN_FILENO);
-    dup2(outPipe[1], STDOUT_FILENO);
-    close(inPipe[1]);
-    close(outPipe[0]);
-    setenv("REQUEST_METHOD", req.method.c_str(), 1);
+    std::string scriptPath = loc.root;
+    if (!scriptPath.empty() && scriptPath[scriptPath.size() - 1] == '/')
+        scriptPath.erase(scriptPath.size() - 1);
+
+    // location キーを探す
+    std::string locKey;
+    for (std::map<std::string, ServerConfig::Location>::const_iterator it = locations.begin();
+         it != locations.end(); ++it)
+    {
+        if (&it->second == &loc)
+            locKey = it->first;
+    }
+
+    if (path_only.find(locKey) == 0)
+    {
+        std::string rest = path_only.substr(locKey.length());
+        if (!rest.empty() && rest[0] != '/')
+            scriptPath += '/';
+        scriptPath += rest;
+    }
+    else
+    {
+        scriptPath += path_only;
+    }
+
+    return std::make_pair(scriptPath, query_str);
+}
+
+// env 設定を作る関数
+std::map<std::string, std::string> buildCgiEnv(const Request &req,
+                                               const ServerConfig::Location &loc,
+                                               const std::map<std::string, ServerConfig::Location> &locations)
+{
+    std::map<std::string, std::string> env;
+
+    env["REQUEST_METHOD"] = req.method;
+
     std::ostringstream len;
     len << req.body.size();
-    setenv("CONTENT_LENGTH", len.str().c_str(), 1);
-    // URI 分割
-    std::pair<std::string, std::string> parts = splitUri(req.uri);
-    std::string path_only = parts.first;  // /cgi-bin/test_get.php
-    std::string query_str = parts.second; // name=chatgpt&lang=ja
-    // SCRIPT_FILENAME 設定
-    std::string scriptPath = root + path_only;
-    setenv("SCRIPT_FILENAME", scriptPath.c_str(), 1);
-    // QUERY_STRING 設定
-    setenv("QUERY_STRING", query_str.c_str(), 1);
-    setenv("REDIRECT_STATUS", "200", 1);
-    char *argv[] = {(char *)"php-cgi", NULL};
-    execve(loc.cgi_path.c_str(), argv, environ);
-    exit(1);
-  }
+    env["CONTENT_LENGTH"] = len.str();
 
-  // --- 親プロセス ---
-  close(inPipe[0]);
-  close(outPipe[1]);
+    std::pair<std::string, std::string> envPaths = buildCgiScriptPath(req.uri, loc, locations);
+    env["SCRIPT_FILENAME"] = envPaths.first;
+    env["QUERY_STRING"] = envPaths.second;
+    env["REDIRECT_STATUS"] = "200";
 
-  // 非ブロッキング設定
-  fcntl(outPipe[0], F_SETFL, O_NONBLOCK);
-
-  // クライアント→CGI 入力送信
-  if (!req.body.empty())
-    write(inPipe[1], req.body.c_str(), req.body.size());
-  close(inPipe[1]);
-
-  // poll 監視に追加
-  struct pollfd pfd;
-  pfd.fd = outPipe[0];
-  pfd.events = POLLIN;
-  fds[nfds++] = pfd; // nfds は現在の要素数
-
-  // 管理マップに登録
-  CgiProcess proc;
-  proc.clientFd = clientFd;
-  proc.pid = pid;
-  proc.outFd = outPipe[0];
-  proc.elapsedLoops = 0;
-  proc.startTime = time(NULL);
-  cgiMap[outPipe[0]] = proc;
+    return env;
 }
+
+// 子プロセス側の設定・exec
+void executeCgiChild(int inFd, int outFd, const std::string &cgiPath,
+                     const std::map<std::string, std::string> &env)
+{
+    dup2(inFd, STDIN_FILENO);
+    dup2(outFd, STDOUT_FILENO);
+    close(inFd); close(outFd);
+
+    for (std::map<std::string, std::string>::const_iterator it = env.begin(); it != env.end(); ++it)
+        setenv(it->first.c_str(), it->second.c_str(), 1);
+
+    char *argv[] = { (char*)"php-cgi", NULL };
+    execve(cgiPath.c_str(), argv, environ);
+    exit(1);
+}
+
+// 親プロセス側でのパイプ送信と poll 登録
+void Server::registerCgiProcess(int clientFd, pid_t pid, int outFd,
+                        const std::string &body, std::map<int, Server::CgiProcess> &cgiMap,
+                        pollfd fds[], int &nfds)
+{
+    // 非ブロッキング設定
+    fcntl(outFd, F_SETFL, O_NONBLOCK);
+
+    // クライアント→CGI 入力送信
+    if (!body.empty()) write(outFd - 1, body.c_str(), body.size()); // inPipe[1] 想定
+    close(outFd - 1);
+
+    // poll 監視に追加
+    pollfd pfd;
+    pfd.fd = outFd;
+    pfd.events = POLLIN;
+    fds[nfds++] = pfd;
+
+    // 管理マップに登録
+    Server::CgiProcess proc;
+    proc.clientFd = clientFd;
+    proc.pid = pid;
+    proc.outFd = outFd;
+    proc.elapsedLoops = 0;
+    proc.startTime = time(NULL);
+    cgiMap[outFd] = proc;
+}
+
+void Server::startCgiProcess(int clientFd, const Request &req, const ServerConfig::Location &loc)
+{
+    int inPipe[2], outPipe[2];
+    if (pipe(inPipe) < 0 || pipe(outPipe) < 0) return;
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        // 子プロセス
+        std::map<std::string, std::string> env = buildCgiEnv(req, loc, cfg.location);
+        executeCgiChild(inPipe[0], outPipe[1], loc.cgi_path, env);
+    }
+
+    // 親プロセス
+    close(inPipe[0]); close(outPipe[1]);
+    registerCgiProcess(clientFd, pid, outPipe[0], req.body, cgiMap, fds, nfds);
+}
+
 
 void Server::handleCgiOutput(int fd) {
   char buf[4096];
@@ -785,22 +897,23 @@ std::string Server::extractNextRequest(std::string &recvBuffer,
   RequestParser parser;
   if (!parser.isRequestComplete(recvBuffer))
     return "";
-  currentRequest = parser.parse(recvBuffer);
-  if (currentRequest.method == "POST" &&
-      currentRequest.headers.find("Content-Length") ==
-          currentRequest.headers.end()) {
-    int fd = findFdByRecvBuffer(recvBuffer); // recvBufferに紐付くfd取得
-    if (fd != -1) {
-      std::string res = "HTTP/1.1 411 Length Required\r\n"
-                        "Content-Length: 0\r\n\r\n";
-      queueSend(fd, res);
-    }
+    currentRequest = parser.parse(recvBuffer);
+    if (currentRequest.method == "POST" &&
+        currentRequest.headers.find("content-length") == currentRequest.headers.end() &&
+        currentRequest.headers.find("transfer-encoding") == currentRequest.headers.end())
+    {
+        int fd = findFdByRecvBuffer(recvBuffer);
+        if (fd != -1) {
+            std::string res =
+                "HTTP/1.1 411 Length Required\r\n"
+                "Content-Length: 0\r\n\r\n";
+            queueSend(fd, res);
+        }
 
-    // recvBuffer からこのリクエスト分を削除
-    recvBuffer.erase(0, parser.getParsedLength());
-    return ""; // リクエスト未完扱いで handleClient 側には渡さない
-  }
-  return recvBuffer.substr(0, parser.getParsedLength());
+        recvBuffer.erase(0, parser.getParsedLength());
+        return "";
+    }
+    return recvBuffer.substr(0, parser.getParsedLength());
 }
 
 int Server::findFdByRecvBuffer(const std::string &buffer) const {

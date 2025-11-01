@@ -81,7 +81,7 @@ private:
     std::string extractNextRequest(std::string &recvBuffer, Request &currentRequest);
     bool isMethodAllowed(const std::string &method,
                          const ServerConfig::Location *loc);
-    bool checkMaxBodySize(int fd, int bytes, const ServerConfig::Location* loc);
+    // bool checkMaxBodySize(int fd, int bytes, const ServerConfig::Location* loc);
     bool handleMethodCheck(int fd, Request &req, const ServerConfig::Location *loc, size_t reqSize);
     void processRequest(int fd, Request &req, const ServerConfig::Location *loc,
                         const std::string &locPath, size_t reqSize);
@@ -101,6 +101,9 @@ private:
     void startCgiProcess(int clientFd, const Request &req, const ServerConfig::Location &loc);          // CGI実行関数
     void handleCgiOutput(int outFd);                     // pollで読み取り可能になったCGI出力を処理
     std::string buildHttpResponseFromCgi(const std::string &cgiOutput);
+    void registerCgiProcess(int clientFd, pid_t pid, int outFd,
+                        const std::string &body, std::map<int, Server::CgiProcess> &cgiMap,
+                        pollfd fds[], int &nfds);
 
     Server::LocationMatch getLocationForUri(const std::string &uri) const;
     void sendGatewayTimeout(int clientFd);
@@ -111,6 +114,7 @@ private:
     void handlePost(int fd, Request &req, const ServerConfig::Location* loc);
     void handleMultipartForm(int fd, Request &req, const ServerConfig::Location* loc);
     void handleUrlEncodedForm(int fd, Request &req, const ServerConfig::Location* loc);
+    void handleChunkedBody(int fd, Request &req, const ServerConfig::Location* loc);
 
     int findFdByRecvBuffer(const std::string &buffer) const;
 
