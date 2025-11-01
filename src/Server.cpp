@@ -295,6 +295,15 @@ void Server::handlePost(int fd, Request &req, const ServerConfig::Location* loc)
         contentType = req.headers.at("Content-Type");
     else
         contentType = "";
+    
+    bool isChunked = false;
+    std::map<std::string, std::string>::iterator it = req.headers.find("transfer-encoding");
+    if (it != req.headers.end() && it->second.find("chunked") != std::string::npos)
+        isChunked = true;    
+    if (isChunked) {
+        handleChunkedBody(fd, req, loc);
+        return;
+    }
 
     if (contentType.find("application/x-www-form-urlencoded") != std::string::npos) {
         handleUrlEncodedForm(fd, req, loc);
@@ -306,6 +315,49 @@ void Server::handlePost(int fd, Request &req, const ServerConfig::Location* loc)
     else {
         std::string body = "Unsupported Content-Type: " + contentType + "\n";
         queueSend(fd, buildHttpResponse(415, body));
+    }
+}
+
+void saveBodyToFile(const std::string &body, const std::string &uploadDir) {
+    // 現在時刻
+    std::time_t t = std::time(NULL);
+    std::tm tm = *std::localtime(&t);
+
+    // ファイル名生成
+    std::ostringstream oss;
+    oss << uploadDir;
+    if (!uploadDir.empty() && uploadDir[uploadDir.size()-1] != '/' && uploadDir[uploadDir.size()-1] != '\\')
+        oss << '/';
+
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &tm);
+    oss << "POST_" << buf;
+
+    static int counter = 0;
+    oss << "_" << counter++ << ".txt";
+
+    std::string filename = oss.str();
+
+    std::ofstream ofs(filename.c_str(), std::ios::binary);
+    if (!ofs.is_open()) {
+        std::cerr << "Failed to open file for writing: " << filename << std::endl;
+        return;
+    }
+
+    ofs.write(body.c_str(), body.size());
+    ofs.close();
+
+    std::cout << "[INFO] Saved POST body to: " << filename << std::endl;
+}
+
+void Server::handleChunkedBody(int fd, Request &req, const ServerConfig::Location* loc) {
+    // すでに unchunk された req.body を使って処理
+    // 例: ファイル保存や CGI に渡すなど
+    if (loc->upload_path.empty()) {
+        queueSend(fd, buildHttpResponse(200, "Chunked data received\n"));
+    } else {
+        saveBodyToFile(req.body, loc->upload_path);
+        queueSend(fd, buildHttpResponse(201, "File saved\n"));
     }
 }
 
