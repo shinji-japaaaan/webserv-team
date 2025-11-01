@@ -576,58 +576,88 @@ std::pair<std::string, std::string> buildCgiScriptPath(
     return std::make_pair(scriptPath, query_str);
 }
 
-void Server::startCgiProcess(int clientFd, const Request &req, const ServerConfig::Location& loc) {
+// env 設定を作る関数
+std::map<std::string, std::string> buildCgiEnv(const Request &req,
+                                               const ServerConfig::Location &loc,
+                                               const std::map<std::string, ServerConfig::Location> &locations)
+{
+    std::map<std::string, std::string> env;
+
+    env["REQUEST_METHOD"] = req.method;
+
+    std::ostringstream len;
+    len << req.body.size();
+    env["CONTENT_LENGTH"] = len.str();
+
+    std::pair<std::string, std::string> envPaths = buildCgiScriptPath(req.uri, loc, locations);
+    env["SCRIPT_FILENAME"] = envPaths.first;
+    env["QUERY_STRING"] = envPaths.second;
+    env["REDIRECT_STATUS"] = "200";
+
+    return env;
+}
+
+// 子プロセス側の設定・exec
+void executeCgiChild(int inFd, int outFd, const std::string &cgiPath,
+                     const std::map<std::string, std::string> &env)
+{
+    dup2(inFd, STDIN_FILENO);
+    dup2(outFd, STDOUT_FILENO);
+    close(inFd); close(outFd);
+
+    for (std::map<std::string, std::string>::const_iterator it = env.begin(); it != env.end(); ++it)
+        setenv(it->first.c_str(), it->second.c_str(), 1);
+
+    char *argv[] = { (char*)"php-cgi", NULL };
+    execve(cgiPath.c_str(), argv, environ);
+    exit(1);
+}
+
+// 親プロセス側でのパイプ送信と poll 登録
+void Server::registerCgiProcess(int clientFd, pid_t pid, int outFd,
+                        const std::string &body, std::map<int, Server::CgiProcess> &cgiMap,
+                        pollfd fds[], int &nfds)
+{
+    // 非ブロッキング設定
+    fcntl(outFd, F_SETFL, O_NONBLOCK);
+
+    // クライアント→CGI 入力送信
+    if (!body.empty()) write(outFd - 1, body.c_str(), body.size()); // inPipe[1] 想定
+    close(outFd - 1);
+
+    // poll 監視に追加
+    pollfd pfd;
+    pfd.fd = outFd;
+    pfd.events = POLLIN;
+    fds[nfds++] = pfd;
+
+    // 管理マップに登録
+    Server::CgiProcess proc;
+    proc.clientFd = clientFd;
+    proc.pid = pid;
+    proc.outFd = outFd;
+    proc.elapsedLoops = 0;
+    proc.startTime = time(NULL);
+    cgiMap[outFd] = proc;
+}
+
+void Server::startCgiProcess(int clientFd, const Request &req, const ServerConfig::Location &loc)
+{
     int inPipe[2], outPipe[2];
     if (pipe(inPipe) < 0 || pipe(outPipe) < 0) return;
 
     pid_t pid = fork();
-    if (pid == 0) { // --- 子プロセス ---
-        dup2(inPipe[0], STDIN_FILENO);
-        dup2(outPipe[1], STDOUT_FILENO);
-        close(inPipe[1]); close(outPipe[0]);
-        setenv("REQUEST_METHOD", req.method.c_str(), 1);
-        std::ostringstream len;
-        len << req.body.size();
-        setenv("CONTENT_LENGTH", len.str().c_str(), 1);
-        // SCRIPT_FILENAME 設定
-        std::pair<std::string, std::string> envPaths = buildCgiScriptPath(
-            req.uri, loc, cfg.location
-        );
-        setenv("SCRIPT_FILENAME", envPaths.first.c_str(), 1);
-        // QUERY_STRING 設定
-        setenv("QUERY_STRING", envPaths.second.c_str(), 1);
-        setenv("REDIRECT_STATUS", "200", 1);
-        char *argv[] = { (char*)"php-cgi", NULL };
-        execve(loc.cgi_path.c_str(), argv, environ);
-        exit(1);
+    if (pid == 0) {
+        // 子プロセス
+        std::map<std::string, std::string> env = buildCgiEnv(req, loc, cfg.location);
+        executeCgiChild(inPipe[0], outPipe[1], loc.cgi_path, env);
     }
 
-    // --- 親プロセス ---
-    close(inPipe[0]);
-    close(outPipe[1]);
-
-    // 非ブロッキング設定
-    fcntl(outPipe[0], F_SETFL, O_NONBLOCK);
-
-    // クライアント→CGI 入力送信
-    if (!req.body.empty()) write(inPipe[1], req.body.c_str(), req.body.size());
-    close(inPipe[1]);
-
-    // poll 監視に追加
-    struct pollfd pfd;
-    pfd.fd = outPipe[0];
-    pfd.events = POLLIN;
-    fds[nfds++] = pfd;  // nfds は現在の要素数
-
-    // 管理マップに登録
-    CgiProcess proc;
-    proc.clientFd = clientFd;
-    proc.pid = pid;
-    proc.outFd = outPipe[0];
-    proc.elapsedLoops = 0;
-    proc.startTime = time(NULL);
-    cgiMap[outPipe[0]] = proc;
+    // 親プロセス
+    close(inPipe[0]); close(outPipe[1]);
+    registerCgiProcess(clientFd, pid, outPipe[0], req.body, cgiMap, fds, nfds);
 }
+
 
 void Server::handleCgiOutput(int fd) {
     char buf[4096];

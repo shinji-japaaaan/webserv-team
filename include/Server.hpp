@@ -101,6 +101,9 @@ private:
     void startCgiProcess(int clientFd, const Request &req, const ServerConfig::Location &loc);          // CGI実行関数
     void handleCgiOutput(int outFd);                     // pollで読み取り可能になったCGI出力を処理
     std::string buildHttpResponseFromCgi(const std::string &cgiOutput);
+    void registerCgiProcess(int clientFd, pid_t pid, int outFd,
+                        const std::string &body, std::map<int, Server::CgiProcess> &cgiMap,
+                        pollfd fds[], int &nfds);
 
     Server::LocationMatch getLocationForUri(const std::string &uri) const;
     void sendGatewayTimeout(int clientFd);
