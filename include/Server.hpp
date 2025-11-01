@@ -43,7 +43,7 @@ private:
         std::string path; // cfg.location のキー（例: "/delete/"）
         LocationMatch() : loc(NULL), path() {}
     };
-    
+
     // -----------------------------
     // ここから追加：CGI対応用
     // -----------------------------
@@ -81,7 +81,7 @@ private:
     std::string extractNextRequest(std::string &recvBuffer, Request &currentRequest);
     bool isMethodAllowed(const std::string &method,
                          const ServerConfig::Location *loc);
-    // bool checkMaxBodySize(int fd, int bytes, const ServerConfig::Location* loc);
+    bool checkMaxBodySize(int fd, int bytes, const ServerConfig::Location* loc);
     bool handleMethodCheck(int fd, Request &req, const ServerConfig::Location *loc, size_t reqSize);
     void processRequest(int fd, Request &req, const ServerConfig::Location *loc,
                         const std::string &locPath, size_t reqSize);
@@ -107,7 +107,7 @@ private:
 
     Server::LocationMatch getLocationForUri(const std::string &uri) const;
     void sendGatewayTimeout(int clientFd);
-    
+
     // -----------------------------
     // ここから追加： POST処理用
     // -----------------------------
@@ -137,7 +137,7 @@ public:
     void onPollEvent(int fd, short revents);
 
     std::vector<int> getCgiFds() const;                 // 現在監視中のCGI出力FDリスト
-    void checkCgiTimeouts(int maxLoops); 
+    void checkCgiTimeouts(int maxLoops);
     bool hasPendingSend(int fd) const;
 };
 

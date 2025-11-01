@@ -75,6 +75,7 @@ std::string unchunkBody(const std::string &chunkedBody) {
 Request RequestParser::parse(const std::string &buffer) {
     Request req;
     parsedLength = 0;
+	// std::cout << "==========raw data===========\n" << buffer << "=====End Raw Data=====" << std::endl ;
 
     size_t headerEnd = buffer.find("\r\n\r\n");
     if (headerEnd == std::string::npos)

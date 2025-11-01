@@ -8,7 +8,7 @@
 #include <ctime>
 #include <cerrno>
 #include <map>
-#include <cstring> 
+#include <cstring>
 
 // ====== 便利関数======
 static bool isMethodAllowed(const std::string &m,
@@ -86,6 +86,7 @@ static std::string reasonPhrase(int code) {
         case 403: return "Forbidden";
         case 404: return "Not Found";
         case 405: return "Method Not Allowed";
+		case 413: return "Payload Too Large";
         case 500: return "Internal Server Error";
     }
     return "Unknown";
@@ -369,7 +370,7 @@ std::string ResponseBuilder::buildErrorResponse(
     }
 
     // ファイルがなければ従来どおりシンプル版
-    return buildSimpleResponse(statusCode, reasonPhrase(statusCode), close); 
+    return buildSimpleResponse(statusCode, reasonPhrase(statusCode), close);
 }
 
 // --- GET/HEAD 処理 (3引数版) ---
@@ -491,3 +492,4 @@ std::string ResponseBuilder::handleDelete(
     // 3) 共通処理で物理パス解決 & unlink
     return handleDeleteCore(tmp, cfg, loc);
 }
+
