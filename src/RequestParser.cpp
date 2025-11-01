@@ -3,101 +3,124 @@
 bool RequestParser::isRequestComplete(const std::string &buffer) {
     size_t headerEnd = buffer.find("\r\n\r\n");
     if (headerEnd == std::string::npos)
-        return false; // ヘッダー未到着
+        return false;
 
-    // Content-Length を取得
     std::string headerPart = buffer.substr(0, headerEnd);
-    size_t contentLength = 0;
-    std::istringstream stream(headerPart);
-    std::string line;
-    while (std::getline(stream, line)) {
-        std::string key = line.substr(0, line.find(":"));
-        key.erase(0, key.find_first_not_of(" \t"));
-        key.erase(key.find_last_not_of(" \t") + 1);
-        std::transform(key.begin(), key.end(), key.begin(), ::tolower);
-        if (key == "content-length") {
-            std::string val = line.substr(line.find(":")+1);
-            val.erase(0, val.find_first_not_of(" \t"));
-            val.erase(val.find_last_not_of(" \t") + 1);
-            contentLength = std::strtoul(val.c_str(), NULL, 10);
-        }
-    }
+    std::map<std::string, std::string> headers = parseHeaders(headerPart);
 
-    // body が届いているか
-    size_t bodySize = buffer.size() - (headerEnd + 4);
-    return bodySize >= contentLength;
+    bool isChunked = false;
+    size_t contentLength = 0;
+
+    if (headers.find("transfer-encoding") != headers.end() &&
+        headers["transfer-encoding"].find("chunked") != std::string::npos)
+        isChunked = true;
+
+    if (headers.find("content-length") != headers.end())
+        contentLength = std::strtoul(headers["content-length"].c_str(), NULL, 10);
+
+    std::string bodyPart = buffer.substr(headerEnd + 4);
+
+    if (isChunked)
+        return bodyPart.find("0\r\n\r\n") != std::string::npos;
+    else
+        return bodyPart.size() >= contentLength;
 }
 
 RequestParser::RequestParser()
     : parsedLength(0){}
 
+std::string unchunkBody(const std::string &chunkedBody) {
+    std::string unchunked;
+    std::istringstream stream(chunkedBody);
+    std::string line;
+
+    while (std::getline(stream, line)) {
+        if (line == "\r" || line.empty()) continue;
+
+        // chunk size 行
+        size_t chunkSize = std::strtoul(line.c_str(), NULL, 16);
+        if (chunkSize == 0)
+            break;
+
+        char *buf = new char[chunkSize + 2];
+        stream.read(buf, chunkSize + 2); // データ＋CRLFを読み飛ばす
+        unchunked.append(buf, chunkSize);
+        delete[] buf;
+    }
+    return unchunked;
+}
+
 Request RequestParser::parse(const std::string &buffer) {
     Request req;
     parsedLength = 0;
 
-    // ヘッダ終了位置
     size_t headerEnd = buffer.find("\r\n\r\n");
     if (headerEnd == std::string::npos)
         return req;
 
     std::string headerPart = buffer.substr(0, headerEnd);
-    std::string bodyPart = buffer.substr(headerEnd + 4);
+    std::string bodyPart   = buffer.substr(headerEnd + 4);
 
-    std::istringstream stream(headerPart);
-    std::string line;
+    // ✅ 同じ関数を利用してヘッダ解析（小文字化も共通化）
+    req.headers = parseHeaders(headerPart);
 
-    // リクエストライン
-    if (!std::getline(stream, line))
-        return req;
+    std::istringstream lineStream(headerPart);
+    std::string requestLine;
+    std::getline(lineStream, requestLine);
+    std::istringstream requestLineStream(requestLine);
+    requestLineStream >> req.method >> req.uri >> req.version;
 
-    std::istringstream lineStream(line);
-    lineStream >> req.method >> req.uri >> req.version;
+    bool isChunked = false;
+    if (req.headers.find("transfer-encoding") != req.headers.end() &&
+        req.headers["transfer-encoding"].find("chunked") != std::string::npos)
+        isChunked = true;
 
-    if (req.version != "HTTP/1.0" && req.version != "HTTP/1.1") {
-        req.method.clear();
-        return req;
-    }
-
-    // ヘッダ解析
-    std::string lastKey;
-    while (std::getline(stream, line)) {
-        if (line.empty() || line == "\r") break;
-
-        if (!line.empty() && (line[0] == ' ' || line[0] == '\t')) {
-            if (!lastKey.empty())
-                req.headers[lastKey] += " " + line.substr(1);
-            continue;
-        }
-
-        size_t pos = line.find(":");
-        if (pos == std::string::npos) continue;
-
-        std::string key = line.substr(0, pos);
-        std::string value = line.substr(pos + 1);
-
-        key.erase(0, key.find_first_not_of(" \t"));
-        key.erase(key.find_last_not_of(" \t") + 1);
-        value.erase(0, value.find_first_not_of(" \t"));
-        value.erase(value.find_last_not_of(" \t\r") + 1);
-
-        req.headers[key] = value;
-        lastKey = key;
-    }
-
-    // Body処理
-    std::map<std::string, std::string>::iterator it = req.headers.find("Content-Length");
-    if (it != req.headers.end()) {
-        size_t contentLength = std::strtoul(it->second.c_str(), NULL, 10);
-        if (bodyPart.size() >= contentLength) {
-            req.body = bodyPart.substr(0, contentLength);
-            parsedLength = headerEnd + 4 + contentLength;
-        }
+    if (isChunked) {
+        req.body = bodyPart.substr(0, bodyPart.find("0\r\n\r\n") + 5);
+        req.body = unchunkBody(req.body);
+        parsedLength = headerEnd + 4 + bodyPart.find("0\r\n\r\n") + 5;
     } else {
-        parsedLength = headerEnd + 4;
+        std::map<std::string, std::string>::iterator it = req.headers.find("content-length");
+        if (it != req.headers.end()) {
+            size_t len = std::strtoul(it->second.c_str(), NULL, 10);
+            req.body = bodyPart.substr(0, len);
+            parsedLength = headerEnd + 4 + len;
+        } else {
+            parsedLength = headerEnd + 4;
+        }
     }
 
     return req;
 }
+
+std::map<std::string, std::string> RequestParser::parseHeaders(const std::string &headerPart) {
+    std::map<std::string, std::string> headers;
+    std::istringstream stream(headerPart);
+    std::string line;
+
+    while (std::getline(stream, line)) {
+        size_t pos = line.find(":");
+        if (pos == std::string::npos)
+            continue;
+
+        std::string key = line.substr(0, pos);
+        std::string val = line.substr(pos + 1);
+
+        // ここで小文字化
+        std::transform(key.begin(), key.end(), key.begin(), ::tolower);
+
+        // トリム
+        key.erase(0, key.find_first_not_of(" \t"));
+        key.erase(key.find_last_not_of(" \t\r") + 1);
+        val.erase(0, val.find_first_not_of(" \t"));
+        val.erase(val.find_last_not_of(" \t\r") + 1);
+
+        headers[key] = val;
+    }
+
+    return headers;
+}
+
 
 // void printRequest(const Request &req) {
 //   std::cout << "=== Request ===" << std::endl;

@@ -22,6 +22,7 @@ public:
   bool isRequestComplete(const std::string &buffer);
   Request parse(const std::string &buffer);
   size_t getParsedLength() const { return parsedLength; }
+  std::map<std::string, std::string> parseHeaders(const std::string &headerPart);
 };
 
 // void printRequest(const Request &req);

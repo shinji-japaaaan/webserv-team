@@ -175,18 +175,18 @@ void Server::handleClient(int index) {
     clients[fd].recvBuffer.append(buffer);
 
     // もしヘッダ解析済みなら max_body_size チェック
-    Request &req = clients[fd].currentRequest;
-    LocationMatch m = getLocationForUri(req.uri);
-    const ServerConfig::Location *loc = m.loc;
+    // Request &req = clients[fd].currentRequest;
+    // LocationMatch m = getLocationForUri(req.uri);
+    // const ServerConfig::Location *loc = m.loc;
 
-    if (loc && clients[fd].receivedBodySize + bytes > static_cast<size_t>(loc->max_body_size)) {
-        queueSend(fd, "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n");
-        handleDisconnect(fd, index, bytes);
-        return;
-    }
+    // if (loc && clients[fd].receivedBodySize + bytes > static_cast<size_t>(loc->max_body_size)) {
+    //     queueSend(fd, "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n");
+    //     handleDisconnect(fd, index, bytes);
+    //     return;
+    // }
 
     // 累積ボディサイズを更新
-    clients[fd].receivedBodySize += bytes;
+    // clients[fd].receivedBodySize += bytes;
 
     // 1リクエストずつ処理
     while (true) {
@@ -199,10 +199,10 @@ void Server::handleClient(int index) {
         const std::string &locPath = m.path;
 
         // 1リクエスト分の body が max_body_size を超えていないかチェック
-        if (!checkMaxBodySize(fd, req.body.size(), loc)) {
-            handleDisconnect(fd, index, 0);
-            break;
-        }
+        // if (!checkMaxBodySize(fd, req.body.size(), loc)) {
+        //     handleDisconnect(fd, index, 0);
+        //     break;
+        // }
 
         printf("Request complete from fd=%d\n", fd);
 
@@ -215,17 +215,17 @@ void Server::handleClient(int index) {
 }
 
 // Server.cpp に実装
-bool Server::checkMaxBodySize(int fd, int bytes, const ServerConfig::Location* loc) {
-    if (!loc) return true;
+// bool Server::checkMaxBodySize(int fd, int bytes, const ServerConfig::Location* loc) {
+//     if (!loc) return true;
 
-    clients[fd].receivedBodySize += bytes;
-    if (clients[fd].receivedBodySize > static_cast<size_t>(loc->max_body_size)) {
-        queueSend(fd, "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n");
-        clients[fd].recvBuffer.clear();
-        return false; // 超過
-    }
-    return true;
-}
+//     clients[fd].receivedBodySize += bytes;
+//     if (clients[fd].receivedBodySize > static_cast<size_t>(loc->max_body_size)) {
+//         queueSend(fd, "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n");
+//         clients[fd].recvBuffer.clear();
+//         return false; // 超過
+//     }
+//     return true;
+// }
 
 bool Server::handleMethodCheck(int fd, Request &req, const ServerConfig::Location *loc, size_t reqSize) {
     if (!isMethodAllowed(req.method, loc)) {
@@ -538,6 +538,44 @@ std::pair<std::string, std::string> splitUri(const std::string& uri) {
     }
 }
 
+// 外部関数（Serverクラス外でも良い）
+std::pair<std::string, std::string> buildCgiScriptPath(
+    const std::string &uri,
+    const ServerConfig::Location &loc,
+    const std::map<std::string, ServerConfig::Location> &locations)
+{
+    std::pair<std::string, std::string> parts = splitUri(uri);
+    std::string path_only = parts.first;
+    std::string query_str = parts.second;
+
+    std::string scriptPath = loc.root;
+    if (!scriptPath.empty() && scriptPath[scriptPath.size() - 1] == '/')
+        scriptPath.erase(scriptPath.size() - 1);
+
+    // location キーを探す
+    std::string locKey;
+    for (std::map<std::string, ServerConfig::Location>::const_iterator it = locations.begin();
+         it != locations.end(); ++it)
+    {
+        if (&it->second == &loc)
+            locKey = it->first;
+    }
+
+    if (path_only.find(locKey) == 0)
+    {
+        std::string rest = path_only.substr(locKey.length());
+        if (!rest.empty() && rest[0] != '/')
+            scriptPath += '/';
+        scriptPath += rest;
+    }
+    else
+    {
+        scriptPath += path_only;
+    }
+
+    return std::make_pair(scriptPath, query_str);
+}
+
 void Server::startCgiProcess(int clientFd, const Request &req, const ServerConfig::Location& loc) {
     int inPipe[2], outPipe[2];
     if (pipe(inPipe) < 0 || pipe(outPipe) < 0) return;
@@ -551,15 +589,13 @@ void Server::startCgiProcess(int clientFd, const Request &req, const ServerConfi
         std::ostringstream len;
         len << req.body.size();
         setenv("CONTENT_LENGTH", len.str().c_str(), 1);
-        // URI 分割
-        std::pair<std::string, std::string> parts = splitUri(req.uri);
-        std::string path_only = parts.first;   // /cgi-bin/test_get.php
-        std::string query_str = parts.second;  // name=chatgpt&lang=ja
         // SCRIPT_FILENAME 設定
-        std::string scriptPath = root + path_only;
-        setenv("SCRIPT_FILENAME", scriptPath.c_str(), 1);
+        std::pair<std::string, std::string> envPaths = buildCgiScriptPath(
+            req.uri, loc, cfg.location
+        );
+        setenv("SCRIPT_FILENAME", envPaths.first.c_str(), 1);
         // QUERY_STRING 設定
-        setenv("QUERY_STRING", query_str.c_str(), 1);
+        setenv("QUERY_STRING", envPaths.second.c_str(), 1);
         setenv("REDIRECT_STATUS", "200", 1);
         char *argv[] = { (char*)"php-cgi", NULL };
         execve(loc.cgi_path.c_str(), argv, environ);
@@ -765,9 +801,10 @@ std::string Server::extractNextRequest(std::string &recvBuffer,
     return "";
     currentRequest = parser.parse(recvBuffer);
     if (currentRequest.method == "POST" &&
-            currentRequest.headers.find("Content-Length") == currentRequest.headers.end()) 
+        currentRequest.headers.find("content-length") == currentRequest.headers.end() &&
+        currentRequest.headers.find("transfer-encoding") == currentRequest.headers.end())
     {
-        int fd = findFdByRecvBuffer(recvBuffer); // recvBufferに紐付くfd取得
+        int fd = findFdByRecvBuffer(recvBuffer);
         if (fd != -1) {
             std::string res =
                 "HTTP/1.1 411 Length Required\r\n"
@@ -775,11 +812,10 @@ std::string Server::extractNextRequest(std::string &recvBuffer,
             queueSend(fd, res);
         }
 
-        // recvBuffer からこのリクエスト分を削除
         recvBuffer.erase(0, parser.getParsedLength());
-        return ""; // リクエスト未完扱いで handleClient 側には渡さない
+        return "";
     }
-  return recvBuffer.substr(0, parser.getParsedLength());
+    return recvBuffer.substr(0, parser.getParsedLength());
 }
 
 int Server::findFdByRecvBuffer(const std::string &buffer) const {
