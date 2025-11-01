@@ -32,23 +32,45 @@ RequestParser::RequestParser()
 std::string unchunkBody(const std::string &chunkedBody) {
     std::string unchunked;
     std::istringstream stream(chunkedBody);
-    std::string line;
 
-    while (std::getline(stream, line)) {
-        if (line == "\r" || line.empty()) continue;
+     bool firstLine = true;
 
-        // chunk size 行
-        size_t chunkSize = std::strtoul(line.c_str(), NULL, 16);
-        if (chunkSize == 0)
-            break;
+    while (true) {
+        std::string line;
+        if (!std::getline(stream, line)) break;
 
-        char *buf = new char[chunkSize + 2];
-        stream.read(buf, chunkSize + 2); // データ＋CRLFを読み飛ばす
-        unchunked.append(buf, chunkSize);
-        delete[] buf;
+        // CR (\r) を削除
+        if (!line.empty() && line[line.size() - 1] == '\r')
+            line.erase(line.size() - 1);
+
+        if (line.empty()) continue;
+
+        // 先頭行が余計なデータの場合は無視
+        if (firstLine) {
+            firstLine = false;
+            std::cout << "[DEBUG] skipping first line: '" << line << "'" << std::endl;
+            continue;
+        }
+
+        // chunk サイズ
+        size_t chunkSize = std::strtoul(line.c_str(), 0, 16); // nullptr -> 0
+
+        if (chunkSize == 0) break; // 最終 chunk
+
+        // データ部分を読み込む
+        std::string data;
+        data.resize(chunkSize);
+        stream.read(&data[0], chunkSize);
+        unchunked += data;
+
+        // データ後の CRLF を読み飛ばす
+        stream.get(); // \r
+        stream.get(); // \n
     }
+
     return unchunked;
 }
+
 
 Request RequestParser::parse(const std::string &buffer) {
     Request req;
