@@ -15,7 +15,7 @@ struct ServerConfig {
     std::string autoindex;
     std::string upload_path;
     std::string index;
-    int max_body_size;
+    size_t max_body_size;
     std::string cgi_path;
 	  std::vector<std::string> method;
     std::map<int, std::string> ret;
