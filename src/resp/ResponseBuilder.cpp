@@ -8,7 +8,7 @@
 #include <ctime>
 #include <cerrno>
 #include <map>
-#include <cstring> 
+#include <cstring>
 
 // ====== 便利関数======
 static bool isMethodAllowed(const std::string &m,
@@ -40,11 +40,11 @@ static std::string buildAllowHeader(const ServerConfig::Location *loc) {
 
 // ====== ローカルヘルパ ======
 
-static bool isDirFs(const std::string& p){
-    struct stat st;
-    if (stat(p.c_str(), &st) != 0) return false;
-    return S_ISDIR(st.st_mode);
-}
+// static bool isDirFs(const std::string& p){
+//     struct stat st;
+//     if (stat(p.c_str(), &st) != 0) return false;
+//     return S_ISDIR(st.st_mode);
+// }
 
 //使われていなかったので一旦コメントアウト
 // static bool isRegFs(const std::string& p){
@@ -86,6 +86,7 @@ static std::string reasonPhrase(int code) {
         case 403: return "Forbidden";
         case 404: return "Not Found";
         case 405: return "Method Not Allowed";
+		case 413: return "Payload Too Large";
         case 500: return "Internal Server Error";
     }
     return "Unknown";
@@ -102,26 +103,24 @@ std::string ResponseBuilder::mergeRoots(
     const ServerConfig::Location *loc
 ) const {
     if (!loc || loc->root.empty()) {
+        std::cerr << "[DEBUG] mergeRoots(): use server root=" << cfg.root << "\n";
         return cfg.root;
     }
 
     const std::string &lr = loc->root;
 
-    // case1: 絶対っぽい書き方 → プロジェクト直下フォルダ扱い
+    // --- case1: 絶対パスならそのまま使う ---
     if (!lr.empty() && lr[0] == '/') {
-        // "/upload/" -> "./upload/"
-        std::string trimmed = lr;
-        // 先頭の'/'を削る
-        while (!trimmed.empty() && trimmed[0] == '/')
-            trimmed.erase(0, 1);
-        // "./" を頭につける
-        return std::string("./") + trimmed;
+        std::cerr << "[DEBUG] mergeRoots(): absolute path detected=" << lr << "\n";
+        return lr;
     }
 
-    // case2: 相対 → サーバrootにぶら下げる
-    // joinPathは既にstaticヘルパとして定義済み
-    return joinPath(cfg.root, lr);
+    // --- case2: 相対パスならサーバrootにぶら下げる ---
+    std::string merged = joinPath(cfg.root, lr);
+    std::cerr << "[DEBUG] mergeRoots(): relative path merged=" << merged << "\n";
+    return merged;
 }
+
 
 // URIからlocationのマウントパスを剥がして、ローカルでの相対パスにする.
 // 例: uri="/delete/test_delete.html", locPath="/delete/"
@@ -179,15 +178,35 @@ std::string ResponseBuilder::resolvePathForGet(
     isDirOut = false;
     std::string target = uri.empty() ? "/" : uri;
 
-    // join
-    std::string path = joinPath(docRoot, target);
-    // ディレクトリだったら index.html を追加
-    if (isDirFs(path)) {
+    std::cerr << "[DEBUG] resolvePathForGet():\n";
+    std::cerr << "        docRoot=" << docRoot << "\n";
+    std::cerr << "        uri=" << uri << "\n";
+
+    // --- "./" の重複防止付きパス結合 ---
+    std::string path;
+    if (docRoot[docRoot.size() - 1] == '/' && target.size() > 0 && target[0] == '/')
+        path = docRoot + target.substr(1);
+    else if (docRoot[docRoot.size() - 1] != '/' && target.size() > 0 && target[0] != '/')
+        path = docRoot + "/" + target;
+    else
+        path = docRoot + target;
+
+    std::cerr << "[DEBUG] joined path(before dir check)=" << path << "\n";
+
+    // --- ディレクトリ判定 ---
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
         isDirOut = true;
-        path = joinPath(path, "index.html");
+        if (path[path.size() - 1] != '/')
+            path += "/";
+        std::cerr << "[DEBUG] detected directory → final=" << path << "\n";
+        return path;  // ← index.html は付けない
     }
+
+    std::cerr << "[DEBUG] final resolved path=" << path << "\n";
     return path;
 }
+
 
 // DELETE用は index.html など補完しない想定
 std::string ResponseBuilder::resolvePathForDelete(
@@ -369,11 +388,9 @@ std::string ResponseBuilder::buildErrorResponse(
     }
 
     // ファイルがなければ従来どおりシンプル版
-    return buildSimpleResponse(statusCode, reasonPhrase(statusCode), close); 
+    return buildSimpleResponse(statusCode, reasonPhrase(statusCode), close);
 }
 
-#include <string>
-#include <sstream>
 #include <dirent.h>
 #include <sys/stat.h>
 
@@ -447,20 +464,36 @@ std::string ResponseBuilder::handleGetLikeCore(
         return buildSimpleResponse(403, reasonPhrase(403), true);
     }
 
-    // 最終的なルートを決定
+    std::cerr << "[DEBUG] handleGetLikeCore(): uri=" << req.uri << "\n";
+
     std::string effectiveRoot = mergeRoots(cfg, loc);
     bool isDirFlag = false;
     std::string absPath = resolvePathForGet(effectiveRoot, req.uri, isDirFlag);
 
+    std::cerr << "[DEBUG] absPath=" << absPath
+              << ", autoindex=" << loc->autoindex << "\n";
+
+    // --- ディレクトリ処理 ---
     if (isDirFlag) {
         if (loc->autoindex == "on") {
+            std::cerr << "[DEBUG] building autoindex HTML\n";
             std::string body = buildAutoIndexHtml(absPath, req.uri);
+            std::cerr << "[DEBUG] body length=" << body.size() << "\n";
             return buildOkResponseFromString(body, "text/html");
         } else {
+            // index.htmlが存在すれば返す（将来的な拡張）
+            std::string indexPath = absPath + "index.html";
+            std::ifstream indexFile(indexPath.c_str(), std::ios::binary);
+            if (indexFile.is_open()) {
+                bool headOnly = (req.method == "HEAD");
+                return buildOkResponseFromFile(indexPath, headOnly, true);
+            }
+            std::cerr << "[DEBUG] directory requested but autoindex=off\n";
             return buildErrorResponse(cfg, loc, 403);
         }
     }
 
+    // --- 通常のファイル処理 ---
     std::ifstream ifs(absPath.c_str(), std::ios::binary);
     if (!ifs.is_open()) {
         return buildErrorResponse(cfg, loc, 404);
@@ -469,6 +502,7 @@ std::string ResponseBuilder::handleGetLikeCore(
     bool headOnly = (req.method == "HEAD");
     return buildOkResponseFromFile(absPath, headOnly, true);
 }
+
 
 // --- DELETE 処理 (3引数版) ---
 std::string ResponseBuilder::handleDeleteCore(
@@ -506,6 +540,7 @@ std::string ResponseBuilder::handleDeleteCore(
         return buildErrorResponse(cfg, loc, 500, true);
     }
 }
+
 
 // GET / HEAD 処理
 // --- エントリーポイント ---
@@ -565,3 +600,4 @@ std::string ResponseBuilder::handleDelete(
     // 3) 共通処理で物理パス解決 & unlink
     return handleDeleteCore(tmp, cfg, loc);
 }
+
