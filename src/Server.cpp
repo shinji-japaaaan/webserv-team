@@ -248,6 +248,14 @@ bool Server::checkMaxBodySize(int fd, int bytes,
 bool Server::handleMethodCheck(int fd, Request &req,
                                const ServerConfig::Location *loc,
                                size_t reqSize) {
+	// 実装済みのMethodかチェック。PUTは未実装なので501で返す。
+	if (req.method != "GET" && req.method != "POST" && req.method != "DELETE" && req.method != "HEAD")
+	{
+		queueSend(fd,
+              "HTTP/1.1 501 Not Implemented\r\n");
+		clients[fd].recvBuffer.erase(0, reqSize);
+		return false;
+	}
   if (!isMethodAllowed(req.method, loc)) {
     queueSend(fd,
               "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n");
@@ -904,6 +912,7 @@ void Server::handleDisconnect(int fd, int index, int bytes) {
 std::string Server::extractNextRequest(std::string &recvBuffer,
                                        Request &currentRequest) {
   RequestParser parser;
+  std::cout << "here" << std::endl;
   if (!parser.isRequestComplete(recvBuffer)) {
     return "";
   }
