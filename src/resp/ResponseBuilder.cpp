@@ -96,26 +96,17 @@ static std::string lowerCopy(const std::string &s)
 }
 
 // 簡易 reason phrase (本当は http::Status::reason() があるならそれを使う)
-static std::string reasonPhrase(int code)
-{
-	switch (code)
-	{
-	case 200:
-		return "OK";
-	case 204:
-		return "No Content";
-	case 403:
-		return "Forbidden";
-	case 404:
-		return "Not Found";
-	case 405:
-		return "Method Not Allowed";
-	case 413:
-		return "Payload Too Large";
-	case 500:
-		return "Internal Server Error";
-	}
-	return "Unknown";
+static std::string reasonPhrase(int code) {
+    switch (code) {
+        case 200: return "OK";
+        case 204: return "No Content";
+        case 403: return "Forbidden";
+        case 404: return "Not Found";
+        case 405: return "Method Not Allowed";
+		    case 413: return "Payload Too Large";
+        case 500: return "Internal Server Error";
+    }
+    return "Unknown";
 }
 
 // cfg.root と loc->root をマージして「最終的に使うルートディレクトリ」を決める。
@@ -624,23 +615,24 @@ std::string ResponseBuilder::handleGetLike(
 
 // --- DELETE (4引数版ラッパー) ---
 std::string ResponseBuilder::handleDelete(
-	const Request &req,
-	const ServerConfig &cfg,
-	const ServerConfig::Location *loc,
-	const std::string &locPath)
-{
-	(void)loc; // Core で使うのでこのまま
-	// 1) locPath を剥がして相対URIを得る
-	std::string rel = stripLocationPrefix(req.uri, locPath);
+    const Request &req,
+    const ServerConfig &cfg,
+    const ServerConfig::Location *loc,
+    const std::string &locPath
+) {
+    (void)loc; // Core で使うのでこのまま
+    // 1) locPath を剥がして相対URIを得る
+    std::string rel = stripLocationPrefix(req.uri, locPath);
 
-	// 2) Core は `req.uri` を見るので、相対をセットした仮の Request を作る
-	Request tmp = req;
-	// 先頭に '/' を付けておくと joinPath で綺麗に繋がる
-	if (rel.empty() || rel[0] != '/')
-		tmp.uri = "/" + rel;
-	else
-		tmp.uri = rel;
+    // 2) Core は `req.uri` を見るので、相対をセットした仮の Request を作る
+    Request tmp = req;
+    // 先頭に '/' を付けておくと joinPath で綺麗に繋がる
+    if (rel.empty() || rel[0] != '/')
+        tmp.uri = "/" + rel;
+    else
+        tmp.uri = rel;
 
-	// 3) 共通処理で物理パス解決 & unlink
-	return handleDeleteCore(tmp, cfg, loc);
+    // 3) 共通処理で物理パス解決 & unlink
+    return handleDeleteCore(tmp, cfg, loc);
 }
+

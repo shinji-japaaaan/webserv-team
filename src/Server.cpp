@@ -184,9 +184,11 @@ void Server::handleClient(int index) {
 
   if (loc && clients[fd].receivedBodySize + bytes >
                  static_cast<size_t>(loc->max_body_size)) {
-    queueSend(fd,
-              "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n");
-    handleDisconnect(fd, index, bytes);
+    std::ostringstream res;
+    res << "HTTP/1.1 413 Payload Too Large\r\nContent-Length: "
+        << clients[fd].receivedBodySize + bytes << "\r\n\r\n";
+    queueSend(fd, res.str());
+    // handleDisconnect(fd, index, bytes);
     return;
   }
 
@@ -207,7 +209,7 @@ void Server::handleClient(int index) {
 
     // 1リクエスト分の body が max_body_size を超えていないかチェック
     if (!checkMaxBodySize(fd, req.body.size(), loc)) {
-      handleDisconnect(fd, index, 0);
+      // handleDisconnect(fd, index, 0);
       break;
     }
 
@@ -232,8 +234,11 @@ bool Server::checkMaxBodySize(int fd, int bytes,
   if ((static_cast<size_t>(loc->max_body_size) != 0) &&
       (clients[fd].receivedBodySize >
        static_cast<size_t>(loc->max_body_size))) {
-    queueSend(fd,
-              "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n");
+
+     std::ostringstream res;
+      res << "HTTP/1.1 413 Payload Too Large\r\nContent-Length: " << bytes
+          << "\r\n\r\n";
+      queueSend(fd, res.str());
     clients[fd].recvBuffer.clear();
     return false; // 超過
   }
@@ -305,14 +310,18 @@ std::string buildHttpResponse(int statusCode, const std::string &body,
 void Server::handlePost(int fd, Request &req, const ServerConfig::Location* loc) {
     std::string contentType;
     if (req.headers.find("content-type") != req.headers.end())
-        contentType = req.headers.at("content-type");
+	{
+		contentType =  req.headers.at("content-type");
+	}
     else
+	{
         contentType = "";
-    
+	}
+
     bool isChunked = false;
     std::map<std::string, std::string>::iterator it = req.headers.find("transfer-encoding");
     if (it != req.headers.end() && it->second.find("chunked") != std::string::npos)
-        isChunked = true;    
+        isChunked = true;
     if (isChunked) {
         handleChunkedBody(fd, req, loc);
         return;
@@ -321,10 +330,10 @@ void Server::handlePost(int fd, Request &req, const ServerConfig::Location* loc)
     if (contentType.find("application/x-www-form-urlencoded") != std::string::npos) {
         handleUrlEncodedForm(fd, req, loc);
         return;
-    } 
+    }
     else if (contentType.find("multipart/form-data") != std::string::npos) {
         handleMultipartForm(fd, req, loc);
-    } 
+    }
     else {
         std::string body = "Unsupported Content-Type: " + contentType + "\n";
         queueSend(fd, buildHttpResponse(415, body));
@@ -500,7 +509,7 @@ void Server::handleMultipartForm(int fd, Request &req,
     return;
   }
 
-  std::string boundary = extractBoundary(req.headers["Content-Type"]);
+  std::string boundary = extractBoundary(req.headers["content-type"]);
   if (boundary.empty()) {
     queueSend(fd,
               buildHttpResponse(400, "Missing boundary in Content-Type.\n"));
@@ -893,30 +902,29 @@ void Server::handleDisconnect(int fd, int index, int bytes) {
 // ----------------------------
 
 std::string Server::extractNextRequest(std::string &recvBuffer,
-									   Request &currentRequest) {
-	RequestParser parser;
-	if (!parser.isRequestComplete(recvBuffer))
-		return "";
+                                       Request &currentRequest) {
+  RequestParser parser;
+  if (!parser.isRequestComplete(recvBuffer)) {
+    return "";
+  }
+    currentRequest = parser.parse(recvBuffer);
+	// printRequest(currentRequest);
+    if (currentRequest.method == "POST" &&
+        currentRequest.headers.find("content-length") == currentRequest.headers.end() &&
+        currentRequest.headers.find("transfer-encoding") == currentRequest.headers.end())
+    {
+        int fd = findFdByRecvBuffer(recvBuffer);
+        if (fd != -1) {
+            std::string res =
+                "HTTP/1.1 411 Length Required\r\n"
+                "Content-Length: 0\r\n\r\n";
+            queueSend(fd, res);
+        }
 
-	currentRequest = parser.parse(recvBuffer);
-
-	if (currentRequest.method == "POST" &&
-		currentRequest.headers.find("content-length") == currentRequest.headers.end() &&
-		currentRequest.headers.find("transfer-encoding") == currentRequest.headers.end()) 
-	{
-		int fd = findFdByRecvBuffer(recvBuffer);
-		if (fd != -1) {
-			std::string res =
-				"HTTP/1.1 411 Length Required\r\n"
-				"Content-Length: 0\r\n\r\n";
-			queueSend(fd, res);
-		}
-
-		recvBuffer.erase(0, parser.getParsedLength());
-		return "";
-	}
-
-	return recvBuffer.substr(0, parser.getParsedLength());
+        recvBuffer.erase(0, parser.getParsedLength());
+        return "";
+    }
+    return recvBuffer.substr(0, parser.getParsedLength());
 }
 
 int Server::findFdByRecvBuffer(const std::string &buffer) const {

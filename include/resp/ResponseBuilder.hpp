@@ -59,7 +59,7 @@ public:
         int statusCode = 500,
         bool close = true) const;
 
-private:
+  private:
     bool isTraversal(const std::string &uri) const;
     std::string mergeRoots(const ServerConfig &cfg,
                            const ServerConfig::Location *loc) const;
