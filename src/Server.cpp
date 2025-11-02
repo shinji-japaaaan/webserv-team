@@ -300,17 +300,23 @@ bool Server::checkMaxBodySize(int fd, int bytes,
 }
 
 bool Server::handleMethodCheck(int fd, Request &req,
-							   const ServerConfig::Location *loc,
-							   size_t reqSize)
-{
-	if (!isMethodAllowed(req.method, loc))
+                               const ServerConfig::Location *loc,
+                               size_t reqSize) {
+	// 実装済みのMethodかチェック。PUTは未実装なので501で返す。
+	if (req.method != "GET" && req.method != "POST" && req.method != "DELETE" && req.method != "HEAD")
 	{
 		queueSend(fd,
-				  "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n");
+              "HTTP/1.1 501 Not Implemented\r\n");
 		clients[fd].recvBuffer.erase(0, reqSize);
 		return false;
 	}
-	return true;
+  if (!isMethodAllowed(req.method, loc)) {
+    queueSend(fd,
+              "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n");
+    clients[fd].recvBuffer.erase(0, reqSize);
+    return false;
+  }
+  return true;
 }
 
 void Server::processRequest(int fd, Request &req,

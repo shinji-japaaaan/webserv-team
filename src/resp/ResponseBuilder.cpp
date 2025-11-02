@@ -582,6 +582,7 @@ std::string ResponseBuilder::generateResponse(
 	const ServerConfig::Location *loc,
 	const std::string &locPath)
 {
+	
 	// 1. メソッド許可チェック (Location の method ディレクティブ)
 	if (!isMethodAllowed(req.method, loc))
 	{
@@ -597,7 +598,7 @@ std::string ResponseBuilder::generateResponse(
 	{
 		return handleDelete(req, cfg, loc, locPath);
 	}
-
+	
 	// 未サポートメソッド
 	return buildMethodNotAllowed(buildAllowHeader(loc), cfg);
 }
