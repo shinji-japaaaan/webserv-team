@@ -263,10 +263,16 @@ void Server::handleClient(int index)
 			continue;
 
 		// CGI / POST / GET 処理
-		if (!handleRedirect(fd, loc))
+		// --- リダイレクト処理 ---
+		if (handleRedirect(fd, loc))
 		{
-			processRequest(fd, req, loc, locPath, requestStr.size());
+			// redirect を queueSend したらこのリクエスト処理は完了
+			// ループを抜けて次の recv まで待つ
+			break;
 		}
+
+		// CGI / POST / GET 処理
+		processRequest(fd, req, loc, locPath, requestStr.size());
 	}
 }
 
