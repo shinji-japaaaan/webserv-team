@@ -117,8 +117,6 @@ private:
     void handleChunkedBody(int fd, Request &req, const ServerConfig::Location* loc);
 
     int findFdByRecvBuffer(const std::string &buffer) const;
-    bool checkMaxBodySize(int fd, int bytes,
-                          const ServerConfig::Location *loc);
 
 public:
     // -----------------------------
