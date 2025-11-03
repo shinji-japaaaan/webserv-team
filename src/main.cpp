@@ -1,7 +1,7 @@
 #include "ServerManager.hpp"
 
 int main(int argc, char *argv[]) {
-	std::string conf_file_path = "./conf/config(ishi).conf";
+	std::string conf_file_path = "./conf/config2.conf";
 	if (argc > 2)
 	{
 		std::cerr << "Argument is more than 2" << std::endl;
