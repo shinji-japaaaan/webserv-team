@@ -867,27 +867,37 @@ void Server::startCgiProcess(int clientFd, const Request &req, const ServerConfi
 
 void Server::handleCgiOutput(int fd)
 {
-	char buf[4096];
-	ssize_t n = read(fd, buf, sizeof(buf));
+    char buf[4096];
+    ssize_t n = read(fd, buf, sizeof(buf));
 
-	if (n > 0)
-	{
-		cgiMap[fd].buffer.append(buf, n);
-		return;
-	}
+    if (n > 0)
+    {
+        // CGIの出力をバッファに追加
+        cgiMap[fd].buffer.append(buf, n);
+    }
+    // n == 0（EOF）の処理は handleCgiClose で行う
+}
 
-	if (n == 0)
-	{ // EOF
-		int clientFd = cgiMap[fd].clientFd;
-		// 関数を呼んでHTTPレスポンスを生成
-		std::string response = buildHttpResponseFromCgi(cgiMap[fd].buffer);
+void Server::handleCgiClose(int fd)
+{
+    if (cgiMap.count(fd) == 0)
+        return;
 
-		// クライアントへ送信キューに追加
-		queueSend(clientFd, response);
-		close(fd);
-		waitpid(cgiMap[fd].pid, NULL, 0);
-		cgiMap.erase(fd);
-	}
+    int clientFd = cgiMap[fd].clientFd;
+
+    // CGIバッファを使って HTTP レスポンス生成
+    std::string response = buildHttpResponseFromCgi(cgiMap[fd].buffer);
+
+    // クライアント送信キューに追加
+    queueSend(clientFd, response);
+
+    // fdクローズ & 子プロセス待機
+    close(fd);
+    waitpid(cgiMap[fd].pid, NULL, 0);
+
+    // CGIマップから削除
+    cgiMap.erase(fd);
+    std::cout << "[DEBUG] CGI closed fd=" << fd << std::endl;
 }
 
 std::string Server::buildHttpResponseFromCgi(const std::string &cgiOutput)
@@ -954,11 +964,6 @@ void Server::handleClientSend(int index)
 		if (n > 0)
 		{
 			client.sendBuffer.erase(0, n);
-			if (client.sendBuffer.empty())
-			{
-				fds[index].events &= ~POLLOUT; // 送信完了 → POLLOUT 無効化
-				handleConnectionClose(fd);
-			}
 		}
 	}
 }
@@ -971,16 +976,6 @@ void Server::queueSend(int fd, const std::string &data)
 	{
 		// 送信バッファにデータを追加
 		it->second.sendBuffer += data;
-
-		// POLLOUT を有効化して poll に送信させる
-		for (int i = 1; i < nfds; i++)
-		{
-			if (fds[i].fd == fd)
-			{
-				fds[i].events |= POLLOUT | POLLIN;
-				break;
-			}
-		}
 	}
 }
 
@@ -991,40 +986,23 @@ void Server::queueSend(int fd, const std::string &data)
 // クライアント接続クローズ処理
 void Server::handleConnectionClose(int fd)
 {
-	// 将来の keep-alive 対応予定
-	// if (client.keepAlive && !client.recvBuffer.empty()) {
-	//     client.state = READY_FOR_NEXT_REQUEST;
-	//     return;
-	// }
+    // clients から削除
+    std::map<int, ClientInfo>::iterator it = clients.find(fd);
+    if (it != clients.end())
+    {
+        std::cout << "[INFO] Closing connection fd=" << fd << std::endl;
 
-	std::cout << "[INFO] Closing connection: fd=" << fd << std::endl;
+        // ソケットを閉じる
+        close(fd);
 
-	// ソケットを閉じる
-	close(fd);
+        // 送受信バッファもクリア
+        it->second.sendBuffer.clear();
+        it->second.recvBuffer.clear();
 
-	// fds 配列から該当 fd を削除（最後の要素と入れ替えて nfds--）
-	int index = -1;
-	for (int i = 0; i < nfds; ++i)
-	{
-		if (fds[i].fd == fd)
-		{
-			index = i;
-			break;
-		}
-	}
-
-	if (index != -1)
-	{
-		fds[index] = fds[nfds - 1];
-		nfds--;
-	}
-
-	// clients から削除
-	std::map<int, ClientInfo>::iterator it = clients.find(fd);
-	if (it != clients.end())
-	{
-		clients.erase(it);
-	}
+        // クライアントマップから削除
+        clients.erase(it);
+    }
+    // pollfd 配列の更新は ServerManager が担当
 }
 
 // 接続切断処理（recv エラーや切断時の処理）
@@ -1109,27 +1087,84 @@ std::vector<int> Server::getClientFds() const
 	return fds;
 }
 
+// void Server::onPollEvent(int fd, short revents)
+// {
+// 	if (fd == serverFd && (revents & POLLIN))
+// 	{
+// 		handleNewConnection();
+// 		return;
+// 	}
+
+// 	// 🔹 CGI出力ファイルディスクリプタなら
+// 	if (cgiMap.count(fd))
+// 	{
+// 		handleCgiOutput(fd);
+// 		return;
+// 	}
+
+// 	// 🔹 通常クライアント
+// 	int idx = findIndexByFd(fd);
+// 	if (revents & POLLIN)
+// 		handleClient(idx);
+// 	if (revents & POLLOUT)
+// 		handleClientSend(idx);
+// }
+
 void Server::onPollEvent(int fd, short revents)
 {
-	if (fd == serverFd && (revents & POLLIN))
-	{
-		handleNewConnection();
-		return;
+    // --------------------------
+    // 1. サーバーFD（新しい接続受付）
+    // --------------------------
+    if (fd == serverFd) {
+        if (revents & POLLIN)
+            handleNewConnection();           // 新しい接続受け入れ
+        if (revents & (POLLERR | POLLHUP))
+            handleServerError(fd);          // listen socketにエラー
+        return;
+    }
+
+    // --------------------------
+    // 2. CGI出力FD
+    // --------------------------
+	if (cgiMap.count(fd)) {
+		if (revents & POLLIN) {
+        	handleCgiOutput(fd);
+		}
+		// POLLHUP または POLLERR が立ったら残データ読み切り + CGI終了処理
+		if (revents & (POLLHUP | POLLERR)) {
+			handleCgiClose(fd);   // fdクローズ、cgiMap削除など
+		}
+    	return;
 	}
 
-	// 🔹 CGI出力ファイルディスクリプタなら
-	if (cgiMap.count(fd))
-	{
-		handleCgiOutput(fd);
-		return;
-	}
+    // --------------------------
+    // 3. 通常クライアントFD
+    // --------------------------
+    if (clients.count(fd)) {
+		int idx = findIndexByFd(fd);
+        if (revents & POLLIN){
+            // 🔹 通常クライアント
+			if (revents & POLLIN)
+				handleClient(idx); 			// クライアントからのリクエスト受信
+		}
+        if (revents & POLLOUT)
+            handleClientSend(idx);           // クライアントへのレスポンス送信
+        if (revents & (POLLERR | POLLHUP))
+            handleConnectionClose(fd);      // エラーや切断時の後処理
+    }
+}
 
-	// 🔹 通常クライアント
-	int idx = findIndexByFd(fd);
-	if (revents & POLLIN)
-		handleClient(idx);
-	if (revents & POLLOUT)
-		handleClientSend(idx);
+// listenソケット（サーバーFD）でエラーが発生したときの処理
+void Server::handleServerError(int fd)
+{
+    std::cerr << "[ERROR] Server socket error on fd " << fd << std::endl;
+
+    // listenソケットは通常閉さない
+    // 必要に応じてログ出力や管理者通知などをここで行う
+    // 例: std::cerr << "Check network/bind settings\n";
+
+    // サーバーを停止する場合はここでclose(fd)するが、
+    // Webservでは通常そのまま運用
 }
 
 // fdからindexを見つける補助関数

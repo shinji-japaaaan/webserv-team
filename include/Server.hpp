@@ -76,6 +76,7 @@ private:
 	int acceptClient(); // accept + nonblocking設定
 	void handleDisconnect(int fd, int index, int bytes);
 	void handleConnectionClose(int fd);
+	void handleServerError(int fd);
 
 	// -----------------------------
 	// クライアント受信処理
@@ -103,7 +104,8 @@ private:
 	// -----------------------------
 	bool isCgiRequest(const Request &req);													   // CGI判定関数
 	void startCgiProcess(int clientFd, const Request &req, const ServerConfig::Location &loc); // CGI実行関数
-	void handleCgiOutput(int outFd);														   // pollで読み取り可能になったCGI出力を処理
+	void handleCgiOutput(int outFd);
+	void handleCgiClose(int outFd);													   
 	std::string buildHttpResponseFromCgi(const std::string &cgiOutput);
 	void registerCgiProcess(int clientFd, pid_t pid, int outFd,
 							const std::string &body, std::map<int, Server::CgiProcess> &cgiMap,

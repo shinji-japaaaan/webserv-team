@@ -509,32 +509,24 @@ ResponseBuilder::handleGetLikeCore(const Request &req, const ServerConfig &cfg,
 std::string
 ResponseBuilder::handleDeleteCore(const Request &req, const ServerConfig &cfg,
                                   const ServerConfig::Location *loc) {
-  std::cout << "[DEBUG] DELETE uri=" << req.uri << std::endl;
-
   if (isTraversal(req.uri)) {
-    std::cout << "[DEBUG] DELETE reject: traversal" << std::endl;
     return buildErrorResponse(cfg, loc, 403, true);
   }
 
   std::string effectiveRoot = mergeRoots(cfg, loc);
   std::string absPath = resolvePathForDelete(effectiveRoot, req.uri);
-  std::cout << "[DEBUG] DELETE resolved path=" << absPath << std::endl;
 
   struct stat st;
   if (stat(absPath.c_str(), &st) != 0) {
-    std::cout << "[DEBUG] DELETE stat failed: " << std::strerror(errno)
-              << std::endl;
     // ★ここ重要：404は buildErrorResponse で確実にボディ付き or
     // カスタムページを返す
     return buildErrorResponse(cfg, loc, 404, true);
   }
 
   if (unlink(absPath.c_str()) == 0) {
-    std::cout << "[DEBUG] DELETE ok -> 204" << std::endl;
     return buildSimpleResponse(204, "No Content", true);
   } else {
     int err = errno;
-    std::cout << "[DEBUG] DELETE failed: " << std::strerror(err) << std::endl;
     if (err == EACCES || err == EPERM) {
       return buildErrorResponse(cfg, loc, 403, true);
     }
