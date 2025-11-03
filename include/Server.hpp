@@ -60,6 +60,7 @@ private:
 		int elapsedLoops;	// poll ループ数タイムアウト用
 		bool activeInLastPoll;
 		time_t startTime; // CGIプロセス開始時刻
+		std::string inputBuffer; // ←追加: CGIへの入力を一時的に蓄積
 	};
 	std::map<int, CgiProcess> cgiMap; // key: outFd, value: 管理情報
 
@@ -68,6 +69,7 @@ private:
 	// -----------------------------
 	bool createSocket();
 	bool bindAndListen();
+	bool setNonBlocking(int fd);
 
 	// -----------------------------
 	// 接続処理
@@ -76,6 +78,7 @@ private:
 	int acceptClient(); // accept + nonblocking設定
 	void handleDisconnect(int fd, int index, int bytes);
 	void handleConnectionClose(int fd);
+	void handleServerError(int fd);
 
 	// -----------------------------
 	// クライアント受信処理
@@ -103,11 +106,14 @@ private:
 	// -----------------------------
 	bool isCgiRequest(const Request &req);													   // CGI判定関数
 	void startCgiProcess(int clientFd, const Request &req, const ServerConfig::Location &loc); // CGI実行関数
-	void handleCgiOutput(int outFd);														   // pollで読み取り可能になったCGI出力を処理
+	void handleCgiOutput(int outFd);
+	void handleCgiClose(int outFd);
+	void handleCgiError(int outFd);											   
 	std::string buildHttpResponseFromCgi(const std::string &cgiOutput);
-	void registerCgiProcess(int clientFd, pid_t pid, int outFd,
-							const std::string &body, std::map<int, Server::CgiProcess> &cgiMap,
-							pollfd fds[], int &nfds);
+	void registerCgiProcess(int clientFd, pid_t pid,
+								int inFd, int outFd, const std::string &body,
+								std::map<int, CgiProcess> &cgiMap,
+								pollfd fds[], int &nfds);
 
 	Server::LocationMatch getLocationForUri(const std::string &uri) const;
 	void sendGatewayTimeout(int clientFd);
