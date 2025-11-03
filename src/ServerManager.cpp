@@ -1,12 +1,9 @@
 #include "ServerManager.hpp"
-#include "Server.hpp"
-#include "CgiProcess.hpp"
+#include <iostream>
 #include <poll.h>
+#include <unistd.h>
 #include <signal.h>
 #include <sys/wait.h>
-#include <unistd.h>
-
-#include <iostream>
 
 ServerManager::ServerManager() {}
 
@@ -16,7 +13,7 @@ ServerManager::~ServerManager() {
     }
 }
 
-bool ServerManager::loadConfig(const std::string& path) {
+bool ServerManager::loadConfig(const std::string &path) {
     ConfigParser parser;
     configs = parser.getServerConfigs(path);
     return true;
@@ -24,14 +21,15 @@ bool ServerManager::loadConfig(const std::string& path) {
 
 bool ServerManager::initAllServers() {
     for (size_t i = 0; i < configs.size(); ++i) {
-        const ServerConfig& cfg = configs[i];
+        const ServerConfig &cfg = configs[i];
         Server* srv = new Server(cfg);
         if (!srv->init()) {
             delete srv;
             return false;
         }
         servers.push_back(srv);
-        std::cout << "Initialized server on " << cfg.host << ":" << cfg.port
+        std::cout << "Initialized server on " 
+                  << cfg.host << ":" << cfg.port 
                   << " (root=" << cfg.root << ")" << std::endl;
     }
     return true;
@@ -42,7 +40,7 @@ bool ServerManager::initAllServers() {
 // ----------------------------
 void ServerManager::runAllServers() {
     const int pollTimeoutMs = 100;    // poll のタイムアウト
-    const int cgiTimeoutSeconds = 5;  // CGI タイムアウトは 5 秒
+    const int cgiTimeoutSeconds = 5; // CGI タイムアウトは 5 秒
 
     while (true) {
         std::vector<PollEntry> entries = buildPollEntries();
@@ -50,6 +48,13 @@ void ServerManager::runAllServers() {
         for (size_t i = 0; i < entries.size(); i++) {
             fds[i].fd = entries[i].fd;
             fds[i].events = entries[i].events;
+
+            // サーバーが送信バッファを持っていれば POLLOUT を追加
+            Server* srv = entries[i].server;
+            if (srv->hasPendingSend(entries[i].fd)) {
+                fds[i].events |= POLLOUT;
+            }
+
             fds[i].revents = 0;
         }
 
@@ -60,10 +65,7 @@ void ServerManager::runAllServers() {
             continue;
         }
 
-        for (size_t i = 0; i < entries.size(); ++i)
-            entries[i].revents = fds[i].revents;
-
-        handlePollEvents(entries);
+        handlePollEvents(fds, entries.size(), entries);
 
         // --- CGI タイムアウト処理 ---
         for (size_t i = 0; i < servers.size(); ++i) {
@@ -77,8 +79,7 @@ void ServerManager::runAllServers() {
 // 送信待ちデータがあるか確認
 bool Server::hasPendingSend(int fd) const {
     std::map<int, ClientInfo>::const_iterator it = clients.find(fd);
-    if (it == clients.end())
-        return false;                       // fd が存在しない場合は false
+    if (it == clients.end()) return false;  // fd が存在しない場合は false
     return !it->second.sendBuffer.empty();  // sendBuffer が空でなければ true
 }
 
@@ -87,7 +88,7 @@ void Server::checkCgiTimeouts(int timeoutSeconds) {
     std::map<int, CgiProcess>::iterator it = cgiMap.begin();
 
     while (it != cgiMap.end()) {
-        CgiProcess& proc = it->second;
+        CgiProcess &proc = it->second;
 
         if (difftime(now, proc.startTime) > timeoutSeconds) {
             // --- CGI 強制終了 ---
@@ -112,6 +113,7 @@ void Server::checkCgiTimeouts(int timeoutSeconds) {
     }
 }
 
+
 void Server::sendGatewayTimeout(int clientFd) {
     std::string response =
         "HTTP/1.1 504 Gateway Timeout\r\n"
@@ -128,7 +130,7 @@ void Server::sendGatewayTimeout(int clientFd) {
         it = clients.find(clientFd);
     }
 
-    ClientInfo& client = it->second;
+    ClientInfo &client = it->second;
     client.sendBuffer += response;
 
     // POLLOUT を有効化して poll で送信可能にする
@@ -138,81 +140,63 @@ void Server::sendGatewayTimeout(int clientFd) {
     }
 }
 
+
 // ----------------------------
 // poll対象FDの作成
 // ----------------------------
 std::vector<PollEntry> ServerManager::buildPollEntries() {
-    std::vector<PollEntry> entries;
+    std::vector<PollEntry> pollEntries;
 
-    for (size_t i = 0; i < servers.size(); ++i) {
+    for (size_t i = 0; i < servers.size(); i++) {
         Server* srv = servers[i];
 
-        // --- サーバソケット（listen）登録 ---
-        PollEntry serverEntry;
-        serverEntry.fd = srv->getServerFd();
-        serverEntry.events = POLLIN;  // 新規接続待ち
-        serverEntry.server = srv;
-        entries.push_back(serverEntry);
+        // listen socket
+        PollEntry listenEntry;
+        listenEntry.fd = srv->getServerFd();
+        listenEntry.events = POLLIN;
+        listenEntry.server = srv;
+        pollEntries.push_back(listenEntry);
 
-        // --- クライアントFD登録 ---
-        const std::map<int, ClientInfo>& clients = srv->getClients();
-        for (std::map<int, ClientInfo>::const_iterator it = clients.begin();
-             it != clients.end(); ++it) {
+        // client sockets
+        std::vector<int> clientFds = srv->getClientFds();
+        for (size_t j = 0; j < clientFds.size(); j++) {
             PollEntry entry;
-            entry.fd = it->first;
+            entry.fd = clientFds[j];
+            entry.events = POLLIN | POLLOUT;
             entry.server = srv;
-            entry.events = POLLIN;
-
-            // 🔹送信バッファが残っているクライアントには POLLOUT を追加
-            if (srv->hasPendingSend(it->first)) {
-                entry.events |= POLLOUT;
-            }
-
-            entries.push_back(entry);
+            pollEntries.push_back(entry);
         }
 
-        // --- CGI FD登録（出力待ち）---
-        const std::map<int, CgiProcess>& cgiMap = srv->getCgiMap();
-        for (std::map<int, CgiProcess>::const_iterator it = cgiMap.begin();
-            it != cgiMap.end(); ++it) {
-            const CgiProcess& cgi = it->second;
-
-            // CGIへの書き込み側（サーバ→CGI）
-            PollEntry writeEntry;
-            writeEntry.fd = cgi.inFd;
-            writeEntry.server = srv;
-            writeEntry.events = POLLOUT;  // サーバがCGIにデータを送る
-            entries.push_back(writeEntry);
-
-            // CGIの出力側（CGI→サーバ）
-            PollEntry readEntry;
-            readEntry.fd = cgi.outFd;
-            readEntry.server = srv;
-            readEntry.events = POLLIN;  // CGIの出力を受け取る
-            entries.push_back(readEntry);
+        // --- CGI 出力パイプ ---
+        std::vector<int> cgiFds = srv->getCgiFds();
+        for (size_t j = 0; j < cgiFds.size(); j++) {
+            PollEntry entry;
+            entry.fd = cgiFds[j];
+            entry.events = POLLIN; // CGIは読むだけ
+            entry.server = srv;
+            pollEntries.push_back(entry);
         }
     }
-    return entries;
+
+    return pollEntries;
+}
+
+std::vector<int> Server::getCgiFds() const {
+    std::vector<int> fds;
+    for (std::map<int, CgiProcess>::const_iterator it = cgiMap.begin();
+        it != cgiMap.end(); ++it) {
+        fds.push_back(it->first);
+    }
+    return fds;
 }
 
 // ----------------------------
 // pollイベント処理
 // ----------------------------
-void ServerManager::handlePollEvents(std::vector<PollEntry>& entries) {
-    for (size_t i = 0; i < entries.size(); ++i) {
-        int fd = entries[i].fd;
-        short revents = entries[i].revents;
-        Server* srv = entries[i].server;
-
-        // if (revents & POLLERR) {
-        //     srv->handlePollError(fd);
-        //     continue;
-        // }
-        if (revents & POLLIN) {
-            srv->handlePollIn(fd);
-        }
-        if (revents & POLLOUT) {
-            srv->handlePollOut(fd);
+void ServerManager::handlePollEvents(struct pollfd* fds, size_t nfds, const std::vector<PollEntry>& entries) {
+    for (size_t i = 0; i < nfds; i++) {
+        if (fds[i].revents != 0) {
+            entries[i].server->onPollEvent(fds[i].fd, fds[i].revents);
         }
     }
 }

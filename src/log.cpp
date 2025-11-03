@@ -1,29 +1,31 @@
 #include "log.hpp"
-
-#include <ctime>
-#include <fstream>
 #include <iostream>
+#include <fstream>
 #include <sstream>
+#include <ctime>
 
 // ★ タイムスタンプを取得
 std::string getTimeStamp() {
     std::time_t t = std::time(NULL);
-    std::tm* tm_ptr = std::localtime(&t);
+    std::tm *tm_ptr = std::localtime(&t);
 
     std::ostringstream oss;
-    oss << (tm_ptr->tm_year + 1900) << "-" << (tm_ptr->tm_mon + 1) << "-"
-        << tm_ptr->tm_mday << " " << tm_ptr->tm_hour << ":" << tm_ptr->tm_min
-        << ":" << tm_ptr->tm_sec;
+    oss << (tm_ptr->tm_year + 1900) << "-"
+        << (tm_ptr->tm_mon + 1) << "-"
+        << tm_ptr->tm_mday << " "
+        << tm_ptr->tm_hour << ":"
+        << tm_ptr->tm_min << ":"
+        << tm_ptr->tm_sec;
 
     return oss.str();
 }
 
 // ★ 通常ログ出力
-void logMessage(LogLevel level, const std::string& msg) {
-    const char* levelStr[] = {"INFO", "WARNING", "ERROR"};
+void logMessage(LogLevel level, const std::string &msg) {
+    const char *levelStr[] = {"INFO", "WARNING", "ERROR"};
 
-    std::string logLine =
-        "[" + getTimeStamp() + "] " + levelStr[level] + ": " + msg;
+    std::string logLine = "[" + getTimeStamp() + "] "
+        + levelStr[level] + ": " + msg;
 
     std::cout << logLine << std::endl;
 
@@ -33,9 +35,8 @@ void logMessage(LogLevel level, const std::string& msg) {
 }
 
 // ★ エラーログ出力
-void logError(const std::string& func, const std::string& msg) {
-    std::string logLine =
-        "[" + getTimeStamp() + "] ERROR (" + func + "): " + msg;
+void logError(const std::string &func, const std::string &msg) {
+    std::string logLine = "[" + getTimeStamp() + "] ERROR (" + func + "): " + msg;
     std::cerr << logLine << std::endl;
 
     // --- 任意: ファイル出力 ---
