@@ -872,11 +872,38 @@ void Server::handleCgiOutput(int fd)
 
     if (n > 0)
     {
-        // CGIの出力をバッファに追加
         cgiMap[fd].buffer.append(buf, n);
     }
-    // n == 0（EOF）の処理は handleCgiClose で行う
+    else if (n == 0)
+    {
+        // EOF → 正常終了
+        handleCgiClose(fd);
+    }
+    else  // n < 0
+    {
+        // 読み取りエラー
+        handleCgiError(fd);
+    }
 }
+
+void Server::handleCgiError(int fd)
+{
+    int clientFd = cgiMap[fd].clientFd;
+
+    std::cerr << "[ERROR] CGI read failed on fd=" << fd << std::endl;
+
+    // HTTP 500 レスポンスを返す
+    std::string response = buildHttpResponse(500, "Internal Server Error\n");
+    queueSend(clientFd, response);
+
+    // fd クローズと子プロセス待機
+    close(fd);
+    waitpid(cgiMap[fd].pid, NULL, 0);
+
+    // CGIマップから削除
+    cgiMap.erase(fd);
+}
+
 
 void Server::handleCgiClose(int fd)
 {
@@ -964,6 +991,11 @@ void Server::handleClientSend(int index)
 		if (n > 0)
 		{
 			client.sendBuffer.erase(0, n);
+		}
+		if (n < 0)//n = 0の場合も含めるとうまくいかない
+		{
+			// 書き込みエラー処理
+			handleDisconnect(fd, index, n);
 		}
 	}
 }
@@ -1086,29 +1118,6 @@ std::vector<int> Server::getClientFds() const
 	}
 	return fds;
 }
-
-// void Server::onPollEvent(int fd, short revents)
-// {
-// 	if (fd == serverFd && (revents & POLLIN))
-// 	{
-// 		handleNewConnection();
-// 		return;
-// 	}
-
-// 	// 🔹 CGI出力ファイルディスクリプタなら
-// 	if (cgiMap.count(fd))
-// 	{
-// 		handleCgiOutput(fd);
-// 		return;
-// 	}
-
-// 	// 🔹 通常クライアント
-// 	int idx = findIndexByFd(fd);
-// 	if (revents & POLLIN)
-// 		handleClient(idx);
-// 	if (revents & POLLOUT)
-// 		handleClientSend(idx);
-// }
 
 void Server::onPollEvent(int fd, short revents)
 {
