@@ -60,6 +60,7 @@ private:
 		int elapsedLoops;	// poll ループ数タイムアウト用
 		bool activeInLastPoll;
 		time_t startTime; // CGIプロセス開始時刻
+		std::string inputBuffer; // ←追加: CGIへの入力を一時的に蓄積
 	};
 	std::map<int, CgiProcess> cgiMap; // key: outFd, value: 管理情報
 
@@ -109,9 +110,10 @@ private:
 	void handleCgiClose(int outFd);
 	void handleCgiError(int outFd);											   
 	std::string buildHttpResponseFromCgi(const std::string &cgiOutput);
-	void registerCgiProcess(int clientFd, pid_t pid, int outFd,
-							const std::string &body, std::map<int, Server::CgiProcess> &cgiMap,
-							pollfd fds[], int &nfds);
+	void registerCgiProcess(int clientFd, pid_t pid,
+								int inFd, int outFd, const std::string &body,
+								std::map<int, CgiProcess> &cgiMap,
+								pollfd fds[], int &nfds);
 
 	Server::LocationMatch getLocationForUri(const std::string &uri) const;
 	void sendGatewayTimeout(int clientFd);

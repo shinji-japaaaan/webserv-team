@@ -194,71 +194,74 @@ void Server::handleClient(int index)
 	int fd = fds[index].fd;
 	int bytes = recv(fd, buffer, sizeof(buffer) - 1, 0);
 
-	if (bytes <= 0)
+	if (bytes == 0) // bytes < 0 は無視して poll に任せる
 	{
 		handleDisconnect(fd, index, bytes);
 		return;
 	}
-
-	buffer[bytes] = '\0';
-	clients[fd].recvBuffer.append(buffer);
-
-	// もしヘッダ解析済みなら max_body_size チェック
-	Request &req = clients[fd].currentRequest;
-	LocationMatch m = getLocationForUri(req.uri);
-	const ServerConfig::Location *loc = m.loc;
-
-	if (loc && clients[fd].receivedBodySize + bytes >
-				   static_cast<size_t>(loc->max_body_size))
+	else if (bytes > 0)
 	{
-		std::ostringstream res;
-		res << "HTTP/1.1 413 Payload Too Large\r\nContent-Length: "
-			<< clients[fd].receivedBodySize + bytes << "\r\n\r\n";
-		queueSend(fd, res.str());
-		// handleDisconnect(fd, index, bytes);
-		return;
-	}
 
-	// 累積ボディサイズを更新
-	clients[fd].receivedBodySize += req.body.size();
+		buffer[bytes] = '\0';
+		clients[fd].recvBuffer.append(buffer);
 
-	// 1リクエストずつ処理
-	while (true)
-	{
-		std::string requestStr =
-			extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
-		if (requestStr.empty())
-			break;
-
+		// もしヘッダ解析済みなら max_body_size チェック
 		Request &req = clients[fd].currentRequest;
 		LocationMatch m = getLocationForUri(req.uri);
 		const ServerConfig::Location *loc = m.loc;
-		const std::string &locPath = m.path;
 
-		// 1リクエスト分の body が max_body_size を超えていないかチェック
-		if (!checkMaxBodySize(fd, req.body.size(), loc))
+		if (loc && clients[fd].receivedBodySize + bytes >
+					static_cast<size_t>(loc->max_body_size))
 		{
-			// handleDisconnect(fd, index, 0);
-			break;
+			std::ostringstream res;
+			res << "HTTP/1.1 413 Payload Too Large\r\nContent-Length: "
+				<< clients[fd].receivedBodySize + bytes << "\r\n\r\n";
+			queueSend(fd, res.str());
+			// handleDisconnect(fd, index, bytes);
+			return;
 		}
 
-		printf("Request complete from fd=%d\n", fd);
+		// 累積ボディサイズを更新
+		clients[fd].receivedBodySize += req.body.size();
 
-		// メソッド許可チェック
-		if (!handleMethodCheck(fd, req, loc, requestStr.size()))
-			continue;
-
-		// CGI / POST / GET 処理
-		// --- リダイレクト処理 ---
-		if (handleRedirect(fd, loc))
+		// 1リクエストずつ処理
+		while (true)
 		{
-			// redirect を queueSend したらこのリクエスト処理は完了
-			// ループを抜けて次の recv まで待つ
-			break;
-		}
+			std::string requestStr =
+				extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
+			if (requestStr.empty())
+				break;
 
-		// CGI / POST / GET 処理
-		processRequest(fd, req, loc, locPath, requestStr.size());
+			Request &req = clients[fd].currentRequest;
+			LocationMatch m = getLocationForUri(req.uri);
+			const ServerConfig::Location *loc = m.loc;
+			const std::string &locPath = m.path;
+
+			// 1リクエスト分の body が max_body_size を超えていないかチェック
+			if (!checkMaxBodySize(fd, req.body.size(), loc))
+			{
+				// handleDisconnect(fd, index, 0);
+				break;
+			}
+
+			printf("Request complete from fd=%d\n", fd);
+
+			// メソッド許可チェック
+			if (!handleMethodCheck(fd, req, loc, requestStr.size()))
+				continue;
+
+			// CGI / POST / GET 処理
+			// --- リダイレクト処理 ---
+			if (handleRedirect(fd, loc))
+			{
+				// redirect を queueSend したらこのリクエスト処理は完了
+				// ループを抜けて次の recv まで待つ
+				break;
+			}
+
+			// CGI / POST / GET 処理
+			processRequest(fd, req, loc, locPath, requestStr.size());
+		}
 	}
 }
 
@@ -803,32 +806,66 @@ void executeCgiChild(int inFd, int outFd, const std::string &cgiPath,
 }
 
 // 親プロセス側でのパイプ送信と poll 登録
-void Server::registerCgiProcess(int clientFd, pid_t pid, int outFd,
-								const std::string &body, std::map<int, Server::CgiProcess> &cgiMap,
-								pollfd fds[], int &nfds)
+void Server::registerCgiProcess(int clientFd, pid_t pid,
+                                int inFd, int outFd, const std::string &body,
+                                std::map<int, Server::CgiProcess> &cgiMap,
+                                pollfd fds[], int &nfds)
 {
-	// 非ブロッキング設定
-	fcntl(outFd, F_SETFL, O_NONBLOCK);
+    // 1. 非ブロッキング設定
+    fcntl(outFd, F_SETFL, O_NONBLOCK);
+    fcntl(inFd, F_SETFL, O_NONBLOCK);
 
-	// クライアント→CGI 入力送信
-	if (!body.empty())
-		write(outFd - 1, body.c_str(), body.size()); // inPipe[1] 想定
-	close(outFd - 1);
+    // 2. クライアント → CGI 入力送信 (inPipe[1] に書き込み)
+    Server::CgiProcess proc;
+    proc.clientFd = clientFd;
+    proc.pid = pid;
+    proc.outFd = outFd;
+    proc.inputBuffer.clear();
 
-	// poll 監視に追加
-	pollfd pfd;
-	pfd.fd = outFd;
-	pfd.events = POLLIN;
-	fds[nfds++] = pfd;
+    if (!body.empty())
+    {
+        // バッファサイズ制限を確認
+        if (body.size() > 1024 * 1024)
+        {
+            // 大きすぎる場合はエラー処理
+            handleCgiError(outFd);
+            close(inFd);
+            return;
+        }
 
-	// 管理マップに登録
-	Server::CgiProcess proc;
-	proc.clientFd = clientFd;
-	proc.pid = pid;
-	proc.outFd = outFd;
-	proc.elapsedLoops = 0;
-	proc.startTime = time(NULL);
-	cgiMap[outFd] = proc;
+        // 入力バッファにデータを追加
+        proc.inputBuffer = body;
+
+        // 非ブロッキングで書き込み可能な範囲を送信
+        ssize_t written = 0;
+        const char* data = proc.inputBuffer.c_str();
+        size_t len = proc.inputBuffer.size();
+        while (written < static_cast<ssize_t>(len))
+        {
+            ssize_t n = write(inFd, data + written, len - written);
+            if (n > 0)
+                written += n;
+            else
+                break; // 書けない場合は次回 poll で再送
+        }
+
+        // 送信済みデータはバッファから削除
+        if (written > 0)
+            proc.inputBuffer.erase(0, written);
+    }
+
+    close(inFd); // 書き込み完了後は閉じる
+
+    // 3. CGI → 親プロセス出力監視 (outPipe[0] を poll に追加)
+    pollfd pfd;
+    pfd.fd = outFd;
+    pfd.events = POLLIN; // 読み込み監視
+    fds[nfds++] = pfd;
+
+    // 4. CGI 管理マップに登録
+    proc.elapsedLoops = 0;
+    proc.startTime = time(NULL);
+    cgiMap[outFd] = proc;
 }
 
 void Server::startCgiProcess(int clientFd, const Request &req, const ServerConfig::Location &loc)
@@ -848,7 +885,7 @@ void Server::startCgiProcess(int clientFd, const Request &req, const ServerConfi
 	// 親プロセス
 	close(inPipe[0]);
 	close(outPipe[1]);
-	registerCgiProcess(clientFd, pid, outPipe[0], req.body, cgiMap, fds, nfds);
+	registerCgiProcess(clientFd, pid, inPipe[1], outPipe[0], req.body, cgiMap, fds, nfds);
 }
 
 void Server::handleCgiOutput(int fd)
@@ -858,7 +895,14 @@ void Server::handleCgiOutput(int fd)
 
     if (n > 0)
     {
-        cgiMap[fd].buffer.append(buf, n);
+        // バッファ上限チェック（例: 1MB）
+        if (cgiMap[fd].buffer.size() + n > 1024 * 1024)
+        {
+            std::cerr << "CGI buffer overflow on fd=" << fd << std::endl;
+            handleCgiError(fd);
+            return;
+        }
+		cgiMap[fd].buffer.append(buf, n);
     }
     else if (n == 0)
     {
@@ -965,25 +1009,32 @@ std::string Server::buildHttpResponseFromCgi(const std::string &cgiOutput)
 // クライアント送信バッファのデータ送信
 void Server::handleClientSend(int index)
 {
-	int fd = fds[index].fd;
-	std::map<int, ClientInfo>::iterator it = clients.find(fd);
-	if (it == clients.end())
-		return;
+    int fd = fds[index].fd;
+    std::map<int, ClientInfo>::iterator it = clients.find(fd);
+    if (it == clients.end())
+        return;
 
-	ClientInfo &client = it->second;
-	if (!client.sendBuffer.empty())
-	{
-		ssize_t n = write(fd, client.sendBuffer.data(), client.sendBuffer.size());
-		if (n > 0)
-		{
-			client.sendBuffer.erase(0, n);
-		}
-		if (n < 0)//n = 0の場合も含めるとうまくいかない
-		{
-			// 書き込みエラー処理
-			handleDisconnect(fd, index, n);
-		}
-	}
+    ClientInfo &client = it->second;
+
+    // 送信バッファが空なら何もしない
+    while (!client.sendBuffer.empty())
+    {
+        // 1回あたりの送信サイズを制限（例: 4KB）
+        size_t sendSize = std::min(client.sendBuffer.size(), static_cast<size_t>(4096));
+
+        ssize_t n = write(fd, client.sendBuffer.data(), sendSize);
+
+        if (n > 0)
+        {
+            // 書き込み済み分をバッファから削除
+            client.sendBuffer.erase(0, n);
+        }
+        else
+        {
+            // n <= 0 の場合は無視して次の POLLOUT で再送
+            break;
+        }
+    }
 }
 
 // 送信キューにデータを追加する関数
