@@ -1,39 +1,36 @@
 #ifndef SERVERMANAGER_HPP
 #define SERVERMANAGER_HPP
 
-#include <poll.h>
-
-#include <map>
-#include <string>
 #include <vector>
-
-#include "ConfigParser.hpp"
+#include <string>
+#include <map>
+#include <poll.h>
 #include "Server.hpp"
+#include "ConfigParser.hpp"
 
 // pollで管理するFD情報
 struct PollEntry {
     int fd;
     short events;
-    short revents;
     Server* server;
-    int clientFd;  // どのクライアントに紐づくCGIか
-    bool isCgiFd;  // CGI用パイプかどうか
+    int clientFd;        // どのクライアントに紐づくCGIか
+    bool isCgiFd;        // CGI用パイプかどうか
 };
 
 class ServerManager {
-   private:
+private:
     std::vector<Server*> servers;
     std::vector<ServerConfig> configs;
     std::vector<PollEntry> buildPollEntries();
-    void handlePollEvents(std::vector<PollEntry>& entries);
+    void handlePollEvents(struct pollfd* fds, size_t nfds, const std::vector<PollEntry>& entries);
 
-   public:
-    ServerManager();
-    ~ServerManager();
+    public:
+      ServerManager();
+      ~ServerManager();
 
-    bool loadConfig(const std::string& path);
-    bool initAllServers();
-    void runAllServers();
-};
+      bool loadConfig(const std::string &path);
+      bool initAllServers();
+      void runAllServers();
+    };
 
 #endif
