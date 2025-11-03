@@ -6,6 +6,8 @@
 #include "RequestParser.hpp"
 #include "ConfigParser.hpp"
 
+#define DEFAULT_ERROR_PAGE "./assets/errors/404_default.html"
+
 class ResponseBuilder {
 public:
     // メインディスパッチャ
