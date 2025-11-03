@@ -68,6 +68,7 @@ private:
 	// -----------------------------
 	bool createSocket();
 	bool bindAndListen();
+	bool setNonBlocking(int fd);
 
 	// -----------------------------
 	// 接続処理

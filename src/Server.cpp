@@ -55,35 +55,36 @@ bool Server::createSocket()
 	serverFd = socket(AF_INET, SOCK_STREAM, 0);
 	if (serverFd < 0)
 	{
-		logMessage(ERROR, std::string("socket() failed: ") + strerror(errno));
-		perror("socket");
+		logMessage(ERROR, "socket() failed: " + std::string(strerror(errno)));
 		return false;
 	}
 
 	int opt = 1;
 	if (setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
 	{
-		logMessage(ERROR, std::string("setsockopt() failed: ") + strerror(errno));
-		perror("setsockopt");
+		logMessage(ERROR, "setsockopt() failed: " + std::string(strerror(errno)));
 		return false;
 	}
-	int flags = fcntl(serverFd, F_GETFL, 0);
-	if (flags == -1)
-	{
-		logMessage(ERROR, std::string("fcntl(F_GETFL) failed: ") + strerror(errno));
-		perror("fcntl get");
-		return false;
-	}
-
-	if (fcntl(serverFd, F_SETFL, flags | O_NONBLOCK) == -1)
-	{
-		logMessage(ERROR,
-				   std::string("fcntl(O_NONBLOCK) failed: ") + strerror(errno));
-		perror("fcntl set O_NONBLOCK");
-		return false;
-	}
+	if (!setNonBlocking(serverFd))
+        return false;
 
 	return true;
+}
+
+bool Server::setNonBlocking(int fd)
+{
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1)
+    {
+        logMessage(ERROR, "fcntl(F_GETFL) failed: " + std::string(strerror(errno)));
+        return false;
+    }
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1)
+    {
+        logMessage(ERROR, "fcntl(O_NONBLOCK) failed: " + std::string(strerror(errno)));
+        return false;
+    }
+    return true;
 }
 
 // bind & listen 設定
@@ -102,17 +103,15 @@ bool Server::bindAndListen()
 
 	if (bind(serverFd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
 	{
-		logMessage(ERROR, std::string("bind() failed: ") + strerror(errno));
-		perror("bind");
+		logMessage(ERROR, "bind() failed: " + std::string(strerror(errno)));
 		return false;
 	}
 
-	if (listen(serverFd, 5) < 0)
-	{
-		logMessage(ERROR, std::string("listen() failed: ") + strerror(errno));
-		perror("listen");
-		return false;
-	}
+	if (listen(serverFd, SOMAXCONN) < 0) // 5 → SOMAXCONN
+    {
+        logMessage(ERROR, "listen() failed: " + std::string(strerror(errno)));
+        return false;
+    }
 
 	return true;
 }
@@ -152,28 +151,15 @@ int Server::acceptClient()
 	int clientFd = accept(serverFd, NULL, NULL);
 	if (clientFd < 0)
 	{
-		logMessage(ERROR, std::string("accept() failed: ") + strerror(errno));
-		perror("accept");
+		logMessage(ERROR, "accept() failed: " + std::string(strerror(errno)));
 		return -1;
 	}
 
-	int flags = fcntl(clientFd, F_GETFL, 0);
-	if (flags == -1)
-	{
-		logMessage(ERROR,
-				   std::string("fcntl(F_GETFL client) failed: ") + strerror(errno));
-		perror("fcntl get client");
-		close(clientFd);
-		return -1;
-	}
-	if (fcntl(clientFd, F_SETFL, flags | O_NONBLOCK) == -1)
-	{
-		logMessage(ERROR, std::string("fcntl(O_NONBLOCK client) failed: ") +
-							  strerror(errno));
-		perror("fcntl set O_NONBLOCK client");
-		close(clientFd);
-		return -1;
-	}
+	if (!setNonBlocking(clientFd))
+    {
+        close(clientFd);
+        return -1;
+    }
 
 	return clientFd;
 }
