@@ -9,6 +9,7 @@
 #include <sstream>
 #include <sys/wait.h>
 #include <utility>
+#include "CgiProcess.hpp"
 
 // ----------------------------
 // コンストラクタ・デストラクタ
@@ -805,38 +806,36 @@ void executeCgiChild(int inFd, int outFd, const std::string &cgiPath,
 	exit(1);
 }
 
-// 親プロセス側でのパイプ送信と poll 登録
+// 親プロセス側でのパイプ送信
 void Server::registerCgiProcess(int clientFd, pid_t pid,
                                 int inFd, int outFd, const std::string &body,
-                                std::map<int, Server::CgiProcess> &cgiMap,
-                                pollfd fds[], int &nfds)
+                                std::map<int, CgiProcess> &cgiMap)
 {
     // 1. 非ブロッキング設定
     fcntl(outFd, F_SETFL, O_NONBLOCK);
     fcntl(inFd, F_SETFL, O_NONBLOCK);
 
     // 2. クライアント → CGI 入力送信 (inPipe[1] に書き込み)
-    Server::CgiProcess proc;
+    CgiProcess proc;
     proc.clientFd = clientFd;
     proc.pid = pid;
+    proc.inFd = inFd;  // inFd をプロセス情報に保持
     proc.outFd = outFd;
     proc.inputBuffer.clear();
 
     if (!body.empty())
     {
-        // バッファサイズ制限を確認
+        // バッファサイズ制限
         if (body.size() > 1024 * 1024)
         {
-            // 大きすぎる場合はエラー処理
             handleCgiError(outFd);
             close(inFd);
             return;
         }
 
-        // 入力バッファにデータを追加
         proc.inputBuffer = body;
 
-        // 非ブロッキングで書き込み可能な範囲を送信
+        // 非ブロッキングで可能な範囲だけ書き込み
         ssize_t written = 0;
         const char* data = proc.inputBuffer.c_str();
         size_t len = proc.inputBuffer.size();
@@ -849,20 +848,18 @@ void Server::registerCgiProcess(int clientFd, pid_t pid,
                 break; // 書けない場合は次回 poll で再送
         }
 
-        // 送信済みデータはバッファから削除
         if (written > 0)
             proc.inputBuffer.erase(0, written);
     }
+	//fdeのcloseもここではしない
+    // 3. pollfd 追加は不要
 
-    close(inFd); // 書き込み完了後は閉じる
+    // 4. CgiProcess の events を初期化
+    proc.events = POLLIN;  // 出力監視は常に
+    if (!proc.inputBuffer.empty())
+        proc.events |= POLLOUT;  // 入力バッファがあれば書き込み監視
 
-    // 3. CGI → 親プロセス出力監視 (outPipe[0] を poll に追加)
-    pollfd pfd;
-    pfd.fd = outFd;
-    pfd.events = POLLIN; // 読み込み監視
-    fds[nfds++] = pfd;
-
-    // 4. CGI 管理マップに登録
+    // 5. CGI 管理マップに登録
     proc.elapsedLoops = 0;
     proc.startTime = time(NULL);
     cgiMap[outFd] = proc;
@@ -885,7 +882,7 @@ void Server::startCgiProcess(int clientFd, const Request &req, const ServerConfi
 	// 親プロセス
 	close(inPipe[0]);
 	close(outPipe[1]);
-	registerCgiProcess(clientFd, pid, inPipe[1], outPipe[0], req.body, cgiMap, fds, nfds);
+	registerCgiProcess(clientFd, pid, inPipe[1], outPipe[0], req.body, cgiMap);
 }
 
 void Server::handleCgiOutput(int fd)
@@ -934,27 +931,47 @@ void Server::handleCgiError(int fd)
     cgiMap.erase(fd);
 }
 
-
 void Server::handleCgiClose(int fd)
 {
+    // --- 1️⃣ 登録確認 ---
     if (cgiMap.count(fd) == 0)
         return;
 
-    int clientFd = cgiMap[fd].clientFd;
+    CgiProcess &proc = cgiMap[fd];
+    int clientFd = proc.clientFd;
 
-    // CGIバッファを使って HTTP レスポンス生成
-    std::string response = buildHttpResponseFromCgi(cgiMap[fd].buffer);
+    // --- 2️⃣ 子プロセス終了確認 (非ブロッキング) ---
+    int status = 0;
+    pid_t result = waitpid(proc.pid, &status, WNOHANG);
+    if (result == 0) {
+        // まだ終了していない（再びpollで呼ばれる）
+        std::cout << "[DEBUG] CGI still running pid=" << proc.pid << std::endl;
+        return;
+    } else if (result < 0) {
+        perror("waitpid");
+    }
 
-    // クライアント送信キューに追加
+    // --- 3️⃣ 出力バッファをHTTPレスポンスに変換 ---
+    std::string response = buildHttpResponseFromCgi(proc.buffer);
     queueSend(clientFd, response);
 
-    // fdクローズ & 子プロセス待機
-    close(fd);
-    waitpid(cgiMap[fd].pid, NULL, 0);
+    // --- 4️⃣ パイプを確実に閉じる ---
+    if (proc.inFd > 0) {
+        close(proc.inFd);
+        proc.inFd = -1;
+    }
+    if (proc.outFd > 0) {
+        close(proc.outFd);
+        proc.outFd = -1;
+    }
 
-    // CGIマップから削除
+    // --- 5️⃣ poll監視解除（次ループで再構築される） ---
+    proc.events = 0;
+
+    // --- 6️⃣ CGIプロセス削除 ---
     cgiMap.erase(fd);
-    std::cout << "[DEBUG] CGI closed fd=" << fd << std::endl;
+
+    std::cout << "[CGI] process pid=" << proc.pid << " cleaned up fd=" << fd << std::endl;
 }
 
 std::string Server::buildHttpResponseFromCgi(const std::string &cgiOutput)
@@ -1170,18 +1187,23 @@ void Server::onPollEvent(int fd, short revents)
     }
 
     // --------------------------
-    // 2. CGI出力FD
+    // 2. CGI FD（出力 or 入力 監視）
     // --------------------------
-	if (cgiMap.count(fd)) {
-		if (revents & POLLIN) {
-        	handleCgiOutput(fd);
-		}
-		// POLLHUP または POLLERR が立ったら残データ読み切り + CGI終了処理
-		if (revents & (POLLHUP | POLLERR)) {
-			handleCgiClose(fd);   // fdクローズ、cgiMap削除など
-		}
-    	return;
-	}
+    if (cgiMap.count(fd)) {
+        // --- CGI出力（子→親） ---
+        if (revents & POLLIN)
+            handleCgiOutput(fd);
+
+        // --- CGI入力（親→子） ---
+        if (revents & POLLOUT)
+            handleCgiInput(fd);
+
+        // --- 終了またはエラー ---
+        if (revents & (POLLHUP | POLLERR))
+            handleCgiClose(fd);
+
+        return;
+    }
 
     // --------------------------
     // 3. 通常クライアントFD
@@ -1197,6 +1219,52 @@ void Server::onPollEvent(int fd, short revents)
             handleClientSend(idx);           // クライアントへのレスポンス送信
         if (revents & (POLLERR | POLLHUP))
             handleConnectionClose(fd);      // エラーや切断時の後処理
+    }
+}
+
+void Server::handleCgiInput(int fd)
+{
+    // CGIエントリ取得
+    if (cgiMap.count(fd) == 0)
+        return;
+
+    CgiProcess *proc = getCgiProcess(fd);
+	if (!proc)
+		return;
+
+    if (proc->inputBuffer.empty()) {
+        // 書き込むものがない → POLLOUT解除
+        proc->events &= ~POLLOUT;
+        if (proc->inFd > 0)
+            close(proc->inFd);
+        proc->inFd = -1;
+        return;
+    }
+
+    // 残りデータを書き込み
+    const char *data = proc->inputBuffer.c_str();
+    ssize_t len = proc->inputBuffer.size();
+    ssize_t written = write(proc->inFd, data, len);
+
+	if (written < 0) {
+        // --- 一時的な書き込み失敗 ---
+        // → poll の次回 POLLOUT で再試行
+        // ただし、パイプ切断など致命的な場合に備えて確認
+        perror("write to CGI inFd failed");
+        return;
+    }
+
+    if (written > 0) {
+        proc->inputBuffer.erase(0, written);
+    }
+
+    // すべて書けたら POLLOUT解除 + inFd クローズ
+    if (proc->inputBuffer.empty()) {
+        proc->events &= ~POLLOUT;
+        if (proc->inFd > 0){
+            close(proc->inFd);
+            proc->inFd = -1;
+        }
     }
 }
 
@@ -1222,4 +1290,12 @@ int Server::findIndexByFd(int fd)
 			return i;
 	}
 	return -1;
+}
+
+CgiProcess* Server::getCgiProcess(int fd) {
+    std::map<int, CgiProcess>::iterator it = cgiMap.find(fd);
+    if (it == cgiMap.end()) {
+        throw std::runtime_error("getCgiProcess: fd not found in cgiMap");
+    }
+    return &(it->second); // ✅ オブジェクトのアドレスを返す
 }

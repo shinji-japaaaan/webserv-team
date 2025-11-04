@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include "CgiProcess.hpp"
 
 ServerManager::ServerManager() {}
 
@@ -147,7 +148,7 @@ std::vector<PollEntry> ServerManager::buildPollEntries() {
         listenEntry.fd = srv->getServerFd();
         listenEntry.events = POLLIN;
         listenEntry.server = srv;
-        listenEntry.clientFd = 0; // 必要に応じて初期化
+        listenEntry.clientFd = 0;
         listenEntry.isCgiFd = false;
         pollEntries.push_back(listenEntry);
 
@@ -168,11 +169,16 @@ std::vector<PollEntry> ServerManager::buildPollEntries() {
         // --- CGI FDs ---
         std::vector<int> cgiFds = srv->getCgiFds();
         for (size_t j = 0; j < cgiFds.size(); ++j) {
+            int fd = cgiFds[j];
+            CgiProcess *proc = srv->getCgiProcess(fd); // CGI状態を取得
+            if (!proc) // 存在しない場合スキップ
+                continue;
+
             PollEntry entry;
-            entry.fd = cgiFds[j];
-            entry.events = POLLIN; // CGI は読むだけ
+            entry.fd = fd;
+            entry.events = proc->events;      // ポインタ参照に変更
             entry.server = srv;
-            entry.clientFd = 0;
+            entry.clientFd = proc->clientFd;  // ポインタ参照に変更
             entry.isCgiFd = true;
             pollEntries.push_back(entry);
         }
