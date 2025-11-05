@@ -689,28 +689,31 @@ Server::LocationMatch Server::getLocationForUri(const std::string &uri) const
 
 bool Server::isCgiRequest(const Request &req)
 {
+    // C++98対応版: リスト初期化禁止なので手動で初期化
+    static const char *exts[] = {".php", ".py"};
+    static const size_t extCount = sizeof(exts) / sizeof(exts[0]);
 
-	// パーサー未実装 → loc に書き込まず、直接比較文字列を使用
-	const std::string cgiExt = ".php";
+    // クエリストリングを除去
+    std::string uri = req.uri;
+    size_t q = uri.find('?');
+    if (q != std::string::npos)
+        uri = uri.substr(0, q);
 
-	// 1. クエリストリングを落とす (/foo.php?x=1 -> /foo.php)
-	std::string uri = req.uri;
-	size_t q = uri.find('?');
-	if (q != std::string::npos)
-	{
-		uri = uri.substr(0, q);
-	}
+    // 拡張子取得
+    size_t dot = uri.find_last_of('.');
+    if (dot == std::string::npos)
+        return false;
 
-	// 2. 最後の '.' を探す
-	size_t dot = uri.find_last_of('.');
-	if (dot == std::string::npos)
-	{
-		// 拡張子が無い → CGIじゃない
-		return false;
-	}
+    std::string ext = uri.substr(dot);
 
-	std::string ext = uri.substr(dot); // ".php" とか
-	return (ext == cgiExt);			   // いまはPHPだけCGI扱い
+    // 対応拡張子と比較
+    for (size_t i = 0; i < extCount; ++i)
+    {
+        if (ext == exts[i])
+            return true;
+    }
+
+    return false;
 }
 
 // ----------------------------
@@ -801,8 +804,13 @@ void executeCgiChild(int inFd, int outFd, const std::string &cgiPath,
 	for (std::map<std::string, std::string>::const_iterator it = env.begin(); it != env.end(); ++it)
 		setenv(it->first.c_str(), it->second.c_str(), 1);
 
-	char *argv[] = {(char *)"php-cgi", NULL};
-	execve(cgiPath.c_str(), argv, environ);
+	// cgiPathに応じてargv[0]を動的に設定
+    char *argv[2];
+    argv[0] = const_cast<char *>(cgiPath.c_str());
+    argv[1] = NULL;
+
+    // execveに動的なcgiPathを渡す
+    execve(argv[0], argv, environ);
 	exit(1);
 }
 
