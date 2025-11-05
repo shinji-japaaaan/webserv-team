@@ -1,0 +1,20 @@
+Server listening on port 8090
+Initialized server on 127.0.0.1:8090 (root=./docs/)
+Server listening on port 8091
+Initialized server on 127.0.0.1:8091 (root=./www/)
+Server listening on port 8092
+Initialized server on 127.0.0.1:8092 (root=./docs/)
+New client connected: fd=6
+Request complete from fd=6
+[2025-11-6 7:8:8] INFO: Client disconnected: fd=6
+New client connected: fd=6
+Request complete from fd=6
+[2025-11-6 7:8:8] INFO: Client disconnected: fd=6
+New client connected: fd=6
+Request complete from fd=6
+[2025-11-6 7:8:8] INFO: Client disconnected: fd=6
+New client connected: fd=6
+[2025-11-6 7:8:12] INFO: Client disconnected: fd=6
+New client connected: fd=6
+Request complete from fd=6
+[2025-11-6 7:8:12] INFO: Client disconnected: fd=6

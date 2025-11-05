@@ -19,9 +19,13 @@ curl -i  -X DELETE $SERVER/testfile.txt
 echo -e "\n--------------------\n"
 
 echo "=== CGI リクエスト (GET) ==="
-curl -i  $SERVER/cgi-bin/test.php
+curl -i  $SERVER/cgi-bin2/test.php
 echo -e "\n--------------------\n"
 
 echo "=== CGI リクエスト (POST) ==="
-curl -i  -X POST -d "param1=hello&param2=world" $SERVER/cgi-bin/test.php
+curl -i  -X POST -d "param1=hello&param2=world" $SERVER/cgi-bin2/test.php
+echo -e "\n--------------------\n"
+
+echo "=== CGI リクエスト (GET) ==="
+curl -i  $SERVER/cgi-bin2/test.py
 echo -e "\n--------------------\n"

@@ -9,6 +9,7 @@
 #include <sstream>
 #include <sys/wait.h>
 #include <utility>
+#include "CgiProcess.hpp"
 
 // ----------------------------
 // コンストラクタ・デストラクタ
@@ -688,28 +689,31 @@ Server::LocationMatch Server::getLocationForUri(const std::string &uri) const
 
 bool Server::isCgiRequest(const Request &req)
 {
+    // C++98対応版: リスト初期化禁止なので手動で初期化
+    static const char *exts[] = {".php", ".py"};
+    static const size_t extCount = sizeof(exts) / sizeof(exts[0]);
 
-	// パーサー未実装 → loc に書き込まず、直接比較文字列を使用
-	const std::string cgiExt = ".php";
+    // クエリストリングを除去
+    std::string uri = req.uri;
+    size_t q = uri.find('?');
+    if (q != std::string::npos)
+        uri = uri.substr(0, q);
 
-	// 1. クエリストリングを落とす (/foo.php?x=1 -> /foo.php)
-	std::string uri = req.uri;
-	size_t q = uri.find('?');
-	if (q != std::string::npos)
-	{
-		uri = uri.substr(0, q);
-	}
+    // 拡張子取得
+    size_t dot = uri.find_last_of('.');
+    if (dot == std::string::npos)
+        return false;
 
-	// 2. 最後の '.' を探す
-	size_t dot = uri.find_last_of('.');
-	if (dot == std::string::npos)
-	{
-		// 拡張子が無い → CGIじゃない
-		return false;
-	}
+    std::string ext = uri.substr(dot);
 
-	std::string ext = uri.substr(dot); // ".php" とか
-	return (ext == cgiExt);			   // いまはPHPだけCGI扱い
+    // 対応拡張子と比較
+    for (size_t i = 0; i < extCount; ++i)
+    {
+        if (ext == exts[i])
+            return true;
+    }
+
+    return false;
 }
 
 // ----------------------------
@@ -800,69 +804,62 @@ void executeCgiChild(int inFd, int outFd, const std::string &cgiPath,
 	for (std::map<std::string, std::string>::const_iterator it = env.begin(); it != env.end(); ++it)
 		setenv(it->first.c_str(), it->second.c_str(), 1);
 
-	char *argv[] = {(char *)"php-cgi", NULL};
-	execve(cgiPath.c_str(), argv, environ);
+	// CGIスクリプトの実際のファイルパスを取得
+    std::string scriptPath;
+    std::map<std::string, std::string>::const_iterator it = env.find("SCRIPT_FILENAME");
+    if (it != env.end())
+        scriptPath = it->second;
+    else
+        scriptPath = "";
+
+    // Pythonや他のインタプリタ系は scriptPath を argv[1] に渡す必要がある
+    char *argv[3];
+    argv[0] = const_cast<char *>(cgiPath.c_str());
+    argv[1] = const_cast<char *>(scriptPath.c_str());
+    argv[2] = NULL;
+    // execveに動的なcgiPathを渡す
+    execve(argv[0], argv, environ);
 	exit(1);
 }
 
-// 親プロセス側でのパイプ送信と poll 登録
+// 親プロセス側でのパイプ送信
 void Server::registerCgiProcess(int clientFd, pid_t pid,
                                 int inFd, int outFd, const std::string &body,
-                                std::map<int, Server::CgiProcess> &cgiMap,
-                                pollfd fds[], int &nfds)
+                                std::map<int, CgiProcess> &cgiMap)
 {
     // 1. 非ブロッキング設定
     fcntl(outFd, F_SETFL, O_NONBLOCK);
     fcntl(inFd, F_SETFL, O_NONBLOCK);
 
-    // 2. クライアント → CGI 入力送信 (inPipe[1] に書き込み)
-    Server::CgiProcess proc;
+    // 2. CGI プロセス情報作成
+    CgiProcess proc;
     proc.clientFd = clientFd;
     proc.pid = pid;
+    proc.inFd = inFd;
     proc.outFd = outFd;
-    proc.inputBuffer.clear();
+    proc.inputBuffer = body;  // 受信済み body をバッファに保持
 
-    if (!body.empty())
+    // 3. 非ブロッキングで可能な範囲だけ書き込み
+    ssize_t written = 0;
+    const char* data = proc.inputBuffer.c_str();
+    size_t len = proc.inputBuffer.size();
+    while (written < static_cast<ssize_t>(len))
     {
-        // バッファサイズ制限を確認
-        if (body.size() > 1024 * 1024)
-        {
-            // 大きすぎる場合はエラー処理
-            handleCgiError(outFd);
-            close(inFd);
-            return;
-        }
-
-        // 入力バッファにデータを追加
-        proc.inputBuffer = body;
-
-        // 非ブロッキングで書き込み可能な範囲を送信
-        ssize_t written = 0;
-        const char* data = proc.inputBuffer.c_str();
-        size_t len = proc.inputBuffer.size();
-        while (written < static_cast<ssize_t>(len))
-        {
-            ssize_t n = write(inFd, data + written, len - written);
-            if (n > 0)
-                written += n;
-            else
-                break; // 書けない場合は次回 poll で再送
-        }
-
-        // 送信済みデータはバッファから削除
-        if (written > 0)
-            proc.inputBuffer.erase(0, written);
+        ssize_t n = write(inFd, data + written, len - written);
+        if (n > 0)
+            written += n;
+        else
+            break; // 書けない場合は次回 poll で再送
     }
+    if (written > 0)
+        proc.inputBuffer.erase(0, written);
 
-    close(inFd); // 書き込み完了後は閉じる
+    // 4. イベント初期化
+    proc.events = POLLIN;  // 出力監視は常に
+    if (!proc.inputBuffer.empty())
+        proc.events |= POLLOUT;  // 書き込み残があれば POLLOUT 追加
 
-    // 3. CGI → 親プロセス出力監視 (outPipe[0] を poll に追加)
-    pollfd pfd;
-    pfd.fd = outFd;
-    pfd.events = POLLIN; // 読み込み監視
-    fds[nfds++] = pfd;
-
-    // 4. CGI 管理マップに登録
+    // 5. CGI 管理マップに登録
     proc.elapsedLoops = 0;
     proc.startTime = time(NULL);
     cgiMap[outFd] = proc;
@@ -885,7 +882,7 @@ void Server::startCgiProcess(int clientFd, const Request &req, const ServerConfi
 	// 親プロセス
 	close(inPipe[0]);
 	close(outPipe[1]);
-	registerCgiProcess(clientFd, pid, inPipe[1], outPipe[0], req.body, cgiMap, fds, nfds);
+	registerCgiProcess(clientFd, pid, inPipe[1], outPipe[0], req.body, cgiMap);
 }
 
 void Server::handleCgiOutput(int fd)
@@ -916,90 +913,208 @@ void Server::handleCgiOutput(int fd)
     }
 }
 
-void Server::handleCgiError(int fd)
+void Server::handleCgiInput(int fd)
 {
-    int clientFd = cgiMap[fd].clientFd;
+    // CGIエントリ取得
+    if (cgiMap.count(fd) == 0)
+        return;
 
-    std::cerr << "[ERROR] CGI read failed on fd=" << fd << std::endl;
+    CgiProcess *proc = getCgiProcess(fd);
+	if (!proc)
+		return;
 
-    // HTTP 500 レスポンスを返す
-    std::string response = buildHttpResponse(500, "Internal Server Error\n");
-    queueSend(clientFd, response);
+    if (proc->inputBuffer.empty()) {
+        // 書き込むものがない → POLLOUT解除
+        proc->events &= ~POLLOUT;
+        if (proc->inFd > 0)
+            close(proc->inFd);
+        proc->inFd = -1;
+        return;
+    }
 
-    // fd クローズと子プロセス待機
-    close(fd);
-    waitpid(cgiMap[fd].pid, NULL, 0);
+    // 残りデータを書き込み
+    const char *data = proc->inputBuffer.c_str();
+    ssize_t len = proc->inputBuffer.size();
+    ssize_t written = write(proc->inFd, data, len);
 
-    // CGIマップから削除
-    cgiMap.erase(fd);
+	if (written < 0) {
+        // --- 一時的な書き込み失敗 ---
+        // → poll の次回 POLLOUT で再試行
+        // ただし、パイプ切断など致命的な場合に備えて確認
+        perror("write to CGI inFd failed");
+        return;
+    }
+
+    if (written > 0) {
+        proc->inputBuffer.erase(0, written);
+    }
+
+    // すべて書けたら POLLOUT解除 + inFd クローズ
+    if (proc->inputBuffer.empty()) {
+        proc->events &= ~POLLOUT;
+        if (proc->inFd > 0){
+            close(proc->inFd);
+            proc->inFd = -1;
+        }
+    }
 }
 
+std::string Server::buildHttpErrorPage(int code, const std::string &message)
+{
+    std::ostringstream oss;
+    oss << "<html><head><title>" << code << " Error</title></head><body>";
+    oss << "<h1>" << code << " " << message << "</h1>";
+    oss << "<hr><p>Webserv CGI Engine</p></body></html>";
+    return oss.str();
+}
 
-void Server::handleCgiClose(int fd)
+void Server::handleCgiError(int fd)
 {
     if (cgiMap.count(fd) == 0)
         return;
 
     int clientFd = cgiMap[fd].clientFd;
+    std::cerr << "[ERROR] CGI read failed on fd=" << fd << std::endl;
 
-    // CGIバッファを使って HTTP レスポンス生成
-    std::string response = buildHttpResponseFromCgi(cgiMap[fd].buffer);
+    std::string body = buildHttpErrorPage(500, "Internal Server Error");
+    std::ostringstream oss;
+    oss << "HTTP/1.1 500 Internal Server Error\r\n";
+    oss << "Content-Type: text/html\r\n";
+    oss << "Content-Length: " << body.size() << "\r\n\r\n";
+    oss << body;
 
-    // クライアント送信キューに追加
-    queueSend(clientFd, response);
-
-    // fdクローズ & 子プロセス待機
+    queueSend(clientFd, oss.str());
     close(fd);
     waitpid(cgiMap[fd].pid, NULL, 0);
-
-    // CGIマップから削除
     cgiMap.erase(fd);
-    std::cout << "[DEBUG] CGI closed fd=" << fd << std::endl;
+}
+
+void Server::handleCgiClose(int fd)
+{
+    // --- 1️⃣ 登録確認 ---
+    if (cgiMap.count(fd) == 0)
+        return;
+
+    CgiProcess &proc = cgiMap[fd];
+    int clientFd = proc.clientFd;
+
+    // --- 2️⃣ 子プロセス終了確認 (非ブロッキング) ---
+    int status = 0;
+    pid_t result = waitpid(proc.pid, &status, WNOHANG);
+    if (result == 0) {
+        // まだ終了していない（再びpollで呼ばれる）
+        std::cout << "[DEBUG] CGI still running pid=" << proc.pid << std::endl;
+        return;
+    } else if (result < 0) {
+        perror("waitpid");
+    }
+
+    // --- 子プロセス異常終了チェック ---
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+    {
+        // 🚨 CGIが異常終了 → HTTP500を返す
+        std::string body = buildHttpErrorPage(500, "Internal Server Error");
+        std::ostringstream oss;
+        oss << "HTTP/1.1 500 Internal Server Error\r\n";
+        oss << "Content-Type: text/html\r\n";
+        oss << "Content-Length: " << body.size() << "\r\n\r\n";
+        oss << body;
+        queueSend(clientFd, oss.str());
+    }
+    else
+    {
+        // ✅ 正常終了 → 通常のレスポンス処理
+        std::string response = buildHttpResponseFromCgi(proc.buffer);
+        queueSend(clientFd, response);
+    }
+
+    // --- 4️⃣ パイプを確実に閉じる ---
+    if (proc.inFd > 0) {
+        close(proc.inFd);
+        proc.inFd = -1;
+    }
+    if (proc.outFd > 0) {
+        close(proc.outFd);
+        proc.outFd = -1;
+    }
+
+    // --- 5️⃣ poll監視解除（次ループで再構築される） ---
+    proc.events = 0;
+
+    // --- 6️⃣ CGIプロセス削除 ---
+    cgiMap.erase(fd);
+
+    std::cout << "[CGI] process pid=" << proc.pid << " cleaned up fd=" << fd << std::endl;
 }
 
 std::string Server::buildHttpResponseFromCgi(const std::string &cgiOutput)
 {
-	// CGIヘッダと本文を分離
-	size_t headerEnd = cgiOutput.find("\r\n\r\n");
-	std::string headers, content;
-	if (headerEnd != std::string::npos)
-	{
-		headers = cgiOutput.substr(0, headerEnd);
-		content = cgiOutput.substr(headerEnd + 4);
-	}
-	else
-	{
-		headers = cgiOutput;
-	}
+    std::string headers;
+    std::string content;
+    std::string statusLine = "HTTP/1.1 200 OK"; // デフォルト
 
-	// --- Statusヘッダを探す ---
-	std::string statusLine = "HTTP/1.1 200 OK"; // デフォルト
-	size_t statusPos = headers.find("Status:");
-	if (statusPos != std::string::npos)
-	{
-		size_t lineEnd = headers.find("\r\n", statusPos);
-		std::string statusValue =
-			headers.substr(statusPos + 7, lineEnd - (statusPos + 7));
-		// 前後の空白除去
-		size_t start = statusValue.find_first_not_of(" \t");
-		size_t end = statusValue.find_last_not_of(" \t");
-		if (start != std::string::npos && end != std::string::npos)
-			statusValue = statusValue.substr(start, end - start + 1);
-		statusLine = "HTTP/1.1 " + statusValue;
-		// "Status:" 行はHTTPレスポンスヘッダには不要なので削除
-		headers.erase(statusPos, lineEnd - statusPos + 2);
-	}
+    // --- 1️⃣ ヘッダと本文を分離 ---
+    size_t headerEnd = cgiOutput.find("\r\n\r\n");
+    if (headerEnd == std::string::npos)
+        headerEnd = cgiOutput.find("\n\n");
+    if (headerEnd != std::string::npos) {
+        headers = cgiOutput.substr(0, headerEnd);
+        content = cgiOutput.substr(headerEnd + (cgiOutput[headerEnd] == '\r' ? 4 : 2));
+    } else {
+        // ヘッダがない → 全部本文として扱う
+        content = cgiOutput;
+    }
 
-	// --- HTTPレスポンスを組み立て ---
-	std::ostringstream oss;
-	oss << statusLine << "\r\n";
-	oss << "Content-Length: " << content.size() << "\r\n";
-	if (!headers.empty())
-		oss << headers << "\r\n";
-	oss << "\r\n";
-	oss << content;
+    // --- 2️⃣ ヘッダ行を個別に処理 ---
+    std::istringstream headerStream(headers);
+    std::string line;
+    std::ostringstream filteredHeaders;
 
-	return oss.str();
+    bool hasContentType = false;
+
+    while (std::getline(headerStream, line)) {
+        // 行末の \r を削除
+        if (!line.empty() && line[line.size() - 1] == '\r')
+    		line.erase(line.size() - 1);
+
+        // 空行スキップ
+        if (line.empty()) continue;
+
+        // case-insensitive 検索のためにコピー
+        std::string lower = line;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+
+        // --- Status ヘッダ ---
+        if (lower.find("status:") == 0) {
+            std::string statusValue = line.substr(7);
+            size_t start = statusValue.find_first_not_of(" \t");
+            size_t end = statusValue.find_last_not_of(" \t");
+            if (start != std::string::npos && end != std::string::npos)
+                statusValue = statusValue.substr(start, end - start + 1);
+            statusLine = "HTTP/1.1 " + statusValue;
+            continue; // StatusヘッダはHTTPヘッダには入れない
+        }
+
+        // --- Content-Type ヘッダ確認 ---
+        if (lower.find("content-type:") == 0)
+            hasContentType = true;
+
+        // その他ヘッダはそのままコピー
+        filteredHeaders << line << "\r\n";
+    }
+
+    // --- 3️⃣ Content-Type補完 ---
+    if (!hasContentType)
+        filteredHeaders << "Content-Type: text/html\r\n";
+
+    // --- 4️⃣ HTTPレスポンス組み立て ---
+    std::ostringstream oss;
+    oss << statusLine << "\r\n";
+    oss << "Content-Length: " << content.size() << "\r\n";
+    oss << filteredHeaders.str();
+    oss << "\r\n" << content;
+
+    return oss.str();
 }
 
 // ----------------------------
@@ -1170,18 +1285,23 @@ void Server::onPollEvent(int fd, short revents)
     }
 
     // --------------------------
-    // 2. CGI出力FD
+    // 2. CGI FD（出力 or 入力 監視）
     // --------------------------
-	if (cgiMap.count(fd)) {
-		if (revents & POLLIN) {
-        	handleCgiOutput(fd);
-		}
-		// POLLHUP または POLLERR が立ったら残データ読み切り + CGI終了処理
-		if (revents & (POLLHUP | POLLERR)) {
-			handleCgiClose(fd);   // fdクローズ、cgiMap削除など
-		}
-    	return;
-	}
+    if (cgiMap.count(fd)) {
+        // --- CGI出力（子→親） ---
+        if (revents & POLLIN)
+            handleCgiOutput(fd);
+
+        // --- CGI入力（親→子） ---
+        if (revents & POLLOUT)
+            handleCgiInput(fd);
+
+        // --- 終了またはエラー ---
+        if (revents & (POLLHUP | POLLERR))
+            handleCgiClose(fd);
+
+        return;
+    }
 
     // --------------------------
     // 3. 通常クライアントFD
@@ -1222,4 +1342,12 @@ int Server::findIndexByFd(int fd)
 			return i;
 	}
 	return -1;
+}
+
+CgiProcess* Server::getCgiProcess(int fd) {
+    std::map<int, CgiProcess>::iterator it = cgiMap.find(fd);
+    if (it == cgiMap.end()) {
+        throw std::runtime_error("getCgiProcess: fd not found in cgiMap");
+    }
+    return &(it->second); // ✅ オブジェクトのアドレスを返す
 }

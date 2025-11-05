@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include "CgiProcess.hpp"
 
 ServerManager::ServerManager() {}
 
@@ -78,34 +79,35 @@ bool Server::hasPendingSend(int fd) const {
 
 void Server::checkCgiTimeouts(int timeoutSeconds) {
     time_t now = time(NULL);
-    std::map<int, CgiProcess>::iterator it = cgiMap.begin();
-
-    while (it != cgiMap.end()) {
+    for (std::map<int, CgiProcess>::iterator it = cgiMap.begin(); it != cgiMap.end(); ) {
         CgiProcess &proc = it->second;
 
-        if (difftime(now, proc.startTime) > timeoutSeconds) {
-            // --- CGI 強制終了 ---
+        if (now - proc.startTime > timeoutSeconds) {
+            std::cerr << "[CGI Timeout] pid=" << proc.pid
+                      << " fd=" << it->first << std::endl;
+
+            // --- 強制終了 ---
             kill(proc.pid, SIGKILL);
 
-            // --- 504 Gateway Timeout レスポンス作成 ---
+            // --- 504レスポンス ---
             sendGatewayTimeout(proc.clientFd);
 
-            // --- CGI 出力 fd を閉じる ---
-            close(proc.outFd);
+            // --- FDクローズ ---
+            if (proc.inFd > 0) close(proc.inFd);
+            if (proc.outFd > 0) close(proc.outFd);
 
             // --- 子プロセス回収 ---
             waitpid(proc.pid, NULL, 0);
 
-            // --- map から削除 ---
+            // --- マップから削除 ---
             std::map<int, CgiProcess>::iterator tmp = it;
-            ++it;
+            ++it;  // erase する前に次のイテレータを確保
             cgiMap.erase(tmp);
         } else {
             ++it;
         }
     }
 }
-
 
 void Server::sendGatewayTimeout(int clientFd) {
     std::string response =
@@ -136,7 +138,7 @@ void Server::sendGatewayTimeout(int clientFd) {
 // ----------------------------
 // poll対象FDの作成
 // ----------------------------
-std::vector<PollEntry> ServerManager::buildPollEntries() {
+    std::vector<PollEntry> ServerManager::buildPollEntries() {
     std::vector<PollEntry> pollEntries;
 
     for (size_t i = 0; i < servers.size(); ++i) {
@@ -147,7 +149,7 @@ std::vector<PollEntry> ServerManager::buildPollEntries() {
         listenEntry.fd = srv->getServerFd();
         listenEntry.events = POLLIN;
         listenEntry.server = srv;
-        listenEntry.clientFd = 0; // 必要に応じて初期化
+        listenEntry.clientFd = 0;
         listenEntry.isCgiFd = false;
         pollEntries.push_back(listenEntry);
 
@@ -168,11 +170,16 @@ std::vector<PollEntry> ServerManager::buildPollEntries() {
         // --- CGI FDs ---
         std::vector<int> cgiFds = srv->getCgiFds();
         for (size_t j = 0; j < cgiFds.size(); ++j) {
+            int fd = cgiFds[j];
+            CgiProcess *proc = srv->getCgiProcess(fd); // CGI状態を取得
+            if (!proc) // 存在しない場合スキップ
+                continue;
+
             PollEntry entry;
-            entry.fd = cgiFds[j];
-            entry.events = POLLIN; // CGI は読むだけ
+            entry.fd = fd;
+            entry.events = proc->events;      // ポインタ参照に変更
             entry.server = srv;
-            entry.clientFd = 0;
+            entry.clientFd = proc->clientFd;  // ポインタ参照に変更
             entry.isCgiFd = true;
             pollEntries.push_back(entry);
         }
