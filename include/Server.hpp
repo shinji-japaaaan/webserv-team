@@ -99,6 +99,7 @@ private:
 	void handleCgiError(int outFd);	
 	void handleCgiInput(int fd);										   
 	std::string buildHttpResponseFromCgi(const std::string &cgiOutput);
+	std::string buildHttpErrorPage(int code, const std::string &message);
 	void registerCgiProcess(int clientFd, pid_t pid,
 								int inFd, int outFd, const std::string &body,
 								std::map<int, CgiProcess> &cgiMap);

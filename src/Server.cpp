@@ -913,21 +913,33 @@ void Server::handleCgiOutput(int fd)
     }
 }
 
+std::string Server::buildHttpErrorPage(int code, const std::string &message)
+{
+    std::ostringstream oss;
+    oss << "<html><head><title>" << code << " Error</title></head><body>";
+    oss << "<h1>" << code << " " << message << "</h1>";
+    oss << "<hr><p>Webserv CGI Engine</p></body></html>";
+    return oss.str();
+}
+
 void Server::handleCgiError(int fd)
 {
-    int clientFd = cgiMap[fd].clientFd;
+    if (cgiMap.count(fd) == 0)
+        return;
 
+    int clientFd = cgiMap[fd].clientFd;
     std::cerr << "[ERROR] CGI read failed on fd=" << fd << std::endl;
 
-    // HTTP 500 レスポンスを返す
-    std::string response = buildHttpResponse(500, "Internal Server Error\n");
-    queueSend(clientFd, response);
+    std::string body = buildHttpErrorPage(500, "Internal Server Error");
+    std::ostringstream oss;
+    oss << "HTTP/1.1 500 Internal Server Error\r\n";
+    oss << "Content-Type: text/html\r\n";
+    oss << "Content-Length: " << body.size() << "\r\n\r\n";
+    oss << body;
 
-    // fd クローズと子プロセス待機
+    queueSend(clientFd, oss.str());
     close(fd);
     waitpid(cgiMap[fd].pid, NULL, 0);
-
-    // CGIマップから削除
     cgiMap.erase(fd);
 }
 
@@ -976,47 +988,72 @@ void Server::handleCgiClose(int fd)
 
 std::string Server::buildHttpResponseFromCgi(const std::string &cgiOutput)
 {
-	// CGIヘッダと本文を分離
-	size_t headerEnd = cgiOutput.find("\r\n\r\n");
-	std::string headers, content;
-	if (headerEnd != std::string::npos)
-	{
-		headers = cgiOutput.substr(0, headerEnd);
-		content = cgiOutput.substr(headerEnd + 4);
-	}
-	else
-	{
-		headers = cgiOutput;
-	}
+    std::string headers;
+    std::string content;
+    std::string statusLine = "HTTP/1.1 200 OK"; // デフォルト
 
-	// --- Statusヘッダを探す ---
-	std::string statusLine = "HTTP/1.1 200 OK"; // デフォルト
-	size_t statusPos = headers.find("Status:");
-	if (statusPos != std::string::npos)
-	{
-		size_t lineEnd = headers.find("\r\n", statusPos);
-		std::string statusValue =
-			headers.substr(statusPos + 7, lineEnd - (statusPos + 7));
-		// 前後の空白除去
-		size_t start = statusValue.find_first_not_of(" \t");
-		size_t end = statusValue.find_last_not_of(" \t");
-		if (start != std::string::npos && end != std::string::npos)
-			statusValue = statusValue.substr(start, end - start + 1);
-		statusLine = "HTTP/1.1 " + statusValue;
-		// "Status:" 行はHTTPレスポンスヘッダには不要なので削除
-		headers.erase(statusPos, lineEnd - statusPos + 2);
-	}
+    // --- 1️⃣ ヘッダと本文を分離 ---
+    size_t headerEnd = cgiOutput.find("\r\n\r\n");
+    if (headerEnd == std::string::npos)
+        headerEnd = cgiOutput.find("\n\n");
+    if (headerEnd != std::string::npos) {
+        headers = cgiOutput.substr(0, headerEnd);
+        content = cgiOutput.substr(headerEnd + (cgiOutput[headerEnd] == '\r' ? 4 : 2));
+    } else {
+        // ヘッダがない → 全部本文として扱う
+        content = cgiOutput;
+    }
 
-	// --- HTTPレスポンスを組み立て ---
-	std::ostringstream oss;
-	oss << statusLine << "\r\n";
-	oss << "Content-Length: " << content.size() << "\r\n";
-	if (!headers.empty())
-		oss << headers << "\r\n";
-	oss << "\r\n";
-	oss << content;
+    // --- 2️⃣ ヘッダ行を個別に処理 ---
+    std::istringstream headerStream(headers);
+    std::string line;
+    std::ostringstream filteredHeaders;
 
-	return oss.str();
+    bool hasContentType = false;
+
+    while (std::getline(headerStream, line)) {
+        // 行末の \r を削除
+        if (!line.empty() && line[line.size() - 1] == '\r')
+    		line.erase(line.size() - 1);
+
+        // 空行スキップ
+        if (line.empty()) continue;
+
+        // case-insensitive 検索のためにコピー
+        std::string lower = line;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+
+        // --- Status ヘッダ ---
+        if (lower.find("status:") == 0) {
+            std::string statusValue = line.substr(7);
+            size_t start = statusValue.find_first_not_of(" \t");
+            size_t end = statusValue.find_last_not_of(" \t");
+            if (start != std::string::npos && end != std::string::npos)
+                statusValue = statusValue.substr(start, end - start + 1);
+            statusLine = "HTTP/1.1 " + statusValue;
+            continue; // StatusヘッダはHTTPヘッダには入れない
+        }
+
+        // --- Content-Type ヘッダ確認 ---
+        if (lower.find("content-type:") == 0)
+            hasContentType = true;
+
+        // その他ヘッダはそのままコピー
+        filteredHeaders << line << "\r\n";
+    }
+
+    // --- 3️⃣ Content-Type補完 ---
+    if (!hasContentType)
+        filteredHeaders << "Content-Type: text/html\r\n";
+
+    // --- 4️⃣ HTTPレスポンス組み立て ---
+    std::ostringstream oss;
+    oss << statusLine << "\r\n";
+    oss << "Content-Length: " << content.size() << "\r\n";
+    oss << filteredHeaders.str();
+    oss << "\r\n" << content;
+
+    return oss.str();
 }
 
 // ----------------------------

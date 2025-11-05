@@ -137,7 +137,7 @@ void Server::sendGatewayTimeout(int clientFd) {
 // ----------------------------
 // poll対象FDの作成
 // ----------------------------
-std::vector<PollEntry> ServerManager::buildPollEntries() {
+    std::vector<PollEntry> ServerManager::buildPollEntries() {
     std::vector<PollEntry> pollEntries;
 
     for (size_t i = 0; i < servers.size(); ++i) {
