@@ -831,49 +831,33 @@ void Server::registerCgiProcess(int clientFd, pid_t pid,
     fcntl(outFd, F_SETFL, O_NONBLOCK);
     fcntl(inFd, F_SETFL, O_NONBLOCK);
 
-    // 2. クライアント → CGI 入力送信 (inPipe[1] に書き込み)
+    // 2. CGI プロセス情報作成
     CgiProcess proc;
     proc.clientFd = clientFd;
     proc.pid = pid;
-    proc.inFd = inFd;  // inFd をプロセス情報に保持
+    proc.inFd = inFd;
     proc.outFd = outFd;
-    proc.inputBuffer.clear();
+    proc.inputBuffer = body;  // 受信済み body をバッファに保持
 
-    if (!body.empty())
+    // 3. 非ブロッキングで可能な範囲だけ書き込み
+    ssize_t written = 0;
+    const char* data = proc.inputBuffer.c_str();
+    size_t len = proc.inputBuffer.size();
+    while (written < static_cast<ssize_t>(len))
     {
-        // バッファサイズ制限
-        if (body.size() > 1024 * 1024)
-        {
-            handleCgiError(outFd);
-            close(inFd);
-            return;
-        }
-
-        proc.inputBuffer = body;
-
-        // 非ブロッキングで可能な範囲だけ書き込み
-        ssize_t written = 0;
-        const char* data = proc.inputBuffer.c_str();
-        size_t len = proc.inputBuffer.size();
-        while (written < static_cast<ssize_t>(len))
-        {
-            ssize_t n = write(inFd, data + written, len - written);
-            if (n > 0)
-                written += n;
-            else
-                break; // 書けない場合は次回 poll で再送
-        }
-
-        if (written > 0)
-            proc.inputBuffer.erase(0, written);
+        ssize_t n = write(inFd, data + written, len - written);
+        if (n > 0)
+            written += n;
+        else
+            break; // 書けない場合は次回 poll で再送
     }
-	//fdeのcloseもここではしない
-    // 3. pollfd 追加は不要
+    if (written > 0)
+        proc.inputBuffer.erase(0, written);
 
-    // 4. CgiProcess の events を初期化
+    // 4. イベント初期化
     proc.events = POLLIN;  // 出力監視は常に
     if (!proc.inputBuffer.empty())
-        proc.events |= POLLOUT;  // 入力バッファがあれば書き込み監視
+        proc.events |= POLLOUT;  // 書き込み残があれば POLLOUT 追加
 
     // 5. CGI 管理マップに登録
     proc.elapsedLoops = 0;
