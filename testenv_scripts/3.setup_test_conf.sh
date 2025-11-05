@@ -23,10 +23,10 @@ server {
         root ./www;
     }
 
-    location /cgi-bin {
+    location /cgi-bin/ {
         method GET POST;
-        root ./www;
-        cgi_path /cgi-bin;
+        root ./www/cgi-bin;
+        cgi_path /usr/bin/python3;
     }
 }
 EOF

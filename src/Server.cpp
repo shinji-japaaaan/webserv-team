@@ -804,11 +804,19 @@ void executeCgiChild(int inFd, int outFd, const std::string &cgiPath,
 	for (std::map<std::string, std::string>::const_iterator it = env.begin(); it != env.end(); ++it)
 		setenv(it->first.c_str(), it->second.c_str(), 1);
 
-	// cgiPathに応じてargv[0]を動的に設定
-    char *argv[2];
-    argv[0] = const_cast<char *>(cgiPath.c_str());
-    argv[1] = NULL;
+	// CGIスクリプトの実際のファイルパスを取得
+    std::string scriptPath;
+    std::map<std::string, std::string>::const_iterator it = env.find("SCRIPT_FILENAME");
+    if (it != env.end())
+        scriptPath = it->second;
+    else
+        scriptPath = "";
 
+    // Pythonや他のインタプリタ系は scriptPath を argv[1] に渡す必要がある
+    char *argv[3];
+    argv[0] = const_cast<char *>(cgiPath.c_str());
+    argv[1] = const_cast<char *>(scriptPath.c_str());
+    argv[2] = NULL;
     // execveに動的なcgiPathを渡す
     execve(argv[0], argv, environ);
 	exit(1);
@@ -971,9 +979,24 @@ void Server::handleCgiClose(int fd)
         perror("waitpid");
     }
 
-    // --- 3️⃣ 出力バッファをHTTPレスポンスに変換 ---
-    std::string response = buildHttpResponseFromCgi(proc.buffer);
-    queueSend(clientFd, response);
+    // --- 子プロセス異常終了チェック ---
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+    {
+        // 🚨 CGIが異常終了 → HTTP500を返す
+        std::string body = buildHttpErrorPage(500, "Internal Server Error");
+        std::ostringstream oss;
+        oss << "HTTP/1.1 500 Internal Server Error\r\n";
+        oss << "Content-Type: text/html\r\n";
+        oss << "Content-Length: " << body.size() << "\r\n\r\n";
+        oss << body;
+        queueSend(clientFd, oss.str());
+    }
+    else
+    {
+        // ✅ 正常終了 → 通常のレスポンス処理
+        std::string response = buildHttpResponseFromCgi(proc.buffer);
+        queueSend(clientFd, response);
+    }
 
     // --- 4️⃣ パイプを確実に閉じる ---
     if (proc.inFd > 0) {
