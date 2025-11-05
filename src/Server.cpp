@@ -913,6 +913,52 @@ void Server::handleCgiOutput(int fd)
     }
 }
 
+void Server::handleCgiInput(int fd)
+{
+    // CGIエントリ取得
+    if (cgiMap.count(fd) == 0)
+        return;
+
+    CgiProcess *proc = getCgiProcess(fd);
+	if (!proc)
+		return;
+
+    if (proc->inputBuffer.empty()) {
+        // 書き込むものがない → POLLOUT解除
+        proc->events &= ~POLLOUT;
+        if (proc->inFd > 0)
+            close(proc->inFd);
+        proc->inFd = -1;
+        return;
+    }
+
+    // 残りデータを書き込み
+    const char *data = proc->inputBuffer.c_str();
+    ssize_t len = proc->inputBuffer.size();
+    ssize_t written = write(proc->inFd, data, len);
+
+	if (written < 0) {
+        // --- 一時的な書き込み失敗 ---
+        // → poll の次回 POLLOUT で再試行
+        // ただし、パイプ切断など致命的な場合に備えて確認
+        perror("write to CGI inFd failed");
+        return;
+    }
+
+    if (written > 0) {
+        proc->inputBuffer.erase(0, written);
+    }
+
+    // すべて書けたら POLLOUT解除 + inFd クローズ
+    if (proc->inputBuffer.empty()) {
+        proc->events &= ~POLLOUT;
+        if (proc->inFd > 0){
+            close(proc->inFd);
+            proc->inFd = -1;
+        }
+    }
+}
+
 std::string Server::buildHttpErrorPage(int code, const std::string &message)
 {
     std::ostringstream oss;
@@ -1271,52 +1317,6 @@ void Server::onPollEvent(int fd, short revents)
             handleClientSend(idx);           // クライアントへのレスポンス送信
         if (revents & (POLLERR | POLLHUP))
             handleConnectionClose(fd);      // エラーや切断時の後処理
-    }
-}
-
-void Server::handleCgiInput(int fd)
-{
-    // CGIエントリ取得
-    if (cgiMap.count(fd) == 0)
-        return;
-
-    CgiProcess *proc = getCgiProcess(fd);
-	if (!proc)
-		return;
-
-    if (proc->inputBuffer.empty()) {
-        // 書き込むものがない → POLLOUT解除
-        proc->events &= ~POLLOUT;
-        if (proc->inFd > 0)
-            close(proc->inFd);
-        proc->inFd = -1;
-        return;
-    }
-
-    // 残りデータを書き込み
-    const char *data = proc->inputBuffer.c_str();
-    ssize_t len = proc->inputBuffer.size();
-    ssize_t written = write(proc->inFd, data, len);
-
-	if (written < 0) {
-        // --- 一時的な書き込み失敗 ---
-        // → poll の次回 POLLOUT で再試行
-        // ただし、パイプ切断など致命的な場合に備えて確認
-        perror("write to CGI inFd failed");
-        return;
-    }
-
-    if (written > 0) {
-        proc->inputBuffer.erase(0, written);
-    }
-
-    // すべて書けたら POLLOUT解除 + inFd クローズ
-    if (proc->inputBuffer.empty()) {
-        proc->events &= ~POLLOUT;
-        if (proc->inFd > 0){
-            close(proc->inFd);
-            proc->inFd = -1;
-        }
     }
 }
 
