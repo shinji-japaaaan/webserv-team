@@ -79,34 +79,35 @@ bool Server::hasPendingSend(int fd) const {
 
 void Server::checkCgiTimeouts(int timeoutSeconds) {
     time_t now = time(NULL);
-    std::map<int, CgiProcess>::iterator it = cgiMap.begin();
-
-    while (it != cgiMap.end()) {
+    for (std::map<int, CgiProcess>::iterator it = cgiMap.begin(); it != cgiMap.end(); ) {
         CgiProcess &proc = it->second;
 
-        if (difftime(now, proc.startTime) > timeoutSeconds) {
-            // --- CGI 強制終了 ---
+        if (now - proc.startTime > timeoutSeconds) {
+            std::cerr << "[CGI Timeout] pid=" << proc.pid
+                      << " fd=" << it->first << std::endl;
+
+            // --- 強制終了 ---
             kill(proc.pid, SIGKILL);
 
-            // --- 504 Gateway Timeout レスポンス作成 ---
+            // --- 504レスポンス ---
             sendGatewayTimeout(proc.clientFd);
 
-            // --- CGI 出力 fd を閉じる ---
-            close(proc.outFd);
+            // --- FDクローズ ---
+            if (proc.inFd > 0) close(proc.inFd);
+            if (proc.outFd > 0) close(proc.outFd);
 
             // --- 子プロセス回収 ---
             waitpid(proc.pid, NULL, 0);
 
-            // --- map から削除 ---
+            // --- マップから削除 ---
             std::map<int, CgiProcess>::iterator tmp = it;
-            ++it;
+            ++it;  // erase する前に次のイテレータを確保
             cgiMap.erase(tmp);
         } else {
             ++it;
         }
     }
 }
-
 
 void Server::sendGatewayTimeout(int clientFd) {
     std::string response =

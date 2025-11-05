@@ -1,3 +1,3 @@
 Server listening on port 8089
 Initialized server on 127.0.0.1:8089 (root=./www/a_local/)
-[2025-11-5 21:24:35] ERROR: bind() failed: Address already in use
+[2025-11-5 22:31:43] ERROR: bind() failed: Address already in use
