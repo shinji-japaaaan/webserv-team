@@ -215,8 +215,9 @@ void Server::handleClient(int index)
 					static_cast<size_t>(loc->max_body_size))
 		{
 			std::ostringstream res;
-			res << "HTTP/1.1 413 Payload Too Large\r\nContent-Length: "
-				<< clients[fd].receivedBodySize + bytes << "\r\n\r\n";
+			res << "HTTP/1.1 413 Payload Too Large\r\n"
+				<< "Content-Length: " << clients[fd].receivedBodySize + bytes << "\r\n"
+				<< "Connection: close\r\n\r\n"; // ← 追加
 			queueSend(fd, res.str());
 			// handleDisconnect(fd, index, bytes);
 			return;
@@ -280,8 +281,9 @@ bool Server::checkMaxBodySize(int fd, int bytes,
 	{
 
 		std::ostringstream res;
-		res << "HTTP/1.1 413 Payload Too Large\r\nContent-Length: " << bytes
-			<< "\r\n\r\n";
+		res << "HTTP/1.1 413 Payload Too Large\r\n"
+			<< "Content-Length: " << bytes << "\r\n"
+			<< "Connection: close\r\n\r\n"; // ← 追加
 		queueSend(fd, res.str());
 		clients[fd].recvBuffer.clear();
 		return false; // 超過
@@ -296,13 +298,17 @@ bool Server::handleMethodCheck(int fd, Request &req,
 	if (req.method != "GET" && req.method != "POST" && req.method != "DELETE" && req.method != "HEAD")
 	{
 		queueSend(fd,
-              "HTTP/1.1 501 Not Implemented\r\n");
+                  "HTTP/1.1 501 Not Implemented\r\n"
+                  "Content-Length: 0\r\n"
+                  "Connection: close\r\n\r\n");		
 		clients[fd].recvBuffer.erase(0, reqSize);
 		return false;
 	}
   if (!isMethodAllowed(req.method, loc)) {
     queueSend(fd,
-              "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n");
+                  "HTTP/1.1 405 Method Not Allowed\r\n"
+                  "Content-Length: 0\r\n"
+                  "Connection: close\r\n\r\n"); // ←追加
     clients[fd].recvBuffer.erase(0, reqSize);
     return false;
   }
@@ -346,13 +352,17 @@ std::string buildHttpResponse(int statusCode, const std::string &body,
 {
 	std::stringstream ss;
 	ss << "HTTP/1.1 " << statusCode << " "
-	   << (statusCode == 201 ? "Created" : statusCode == 403 ? "Forbidden"
-									   : statusCode == 500	 ? "Internal Server Error"
-															 : "")
-	   << "\r\n";
-	ss << "Content-Length:" << body.size() << "\r\n";
-	ss << "Content-Type: " << contentType << "\r\n\r\n";
-	ss << body;
+       << (statusCode == 201 ? "Created"
+           : statusCode == 403 ? "Forbidden"
+           : statusCode == 500 ? "Internal Server Error"
+           : "")
+       << "\r\n";
+
+    ss << "Content-Length: " << body.size() << "\r\n";
+    ss << "Content-Type: " << contentType << "\r\n";
+    ss << "Connection: close\r\n"; // ← 追加
+    ss << "\r\n";                  // ヘッダーと本文の区切り
+    ss << body;
 	return ss.str();
 }
 
@@ -957,6 +967,7 @@ void Server::handleCgiError(int fd)
     oss << "HTTP/1.1 500 Internal Server Error\r\n";
     oss << "Content-Type: text/html\r\n";
     oss << "Content-Length: " << body.size() << "\r\n\r\n";
+	oss << "Connection: close\r\n\r\n"; // ← 追加
     oss << body;
 
     queueSend(clientFd, oss.str());
@@ -991,10 +1002,11 @@ void Server::handleCgiClose(int fd)
         // 🚨 CGIが異常終了 → HTTP500を返す
         std::string body = buildHttpErrorPage(500, "Internal Server Error");
         std::ostringstream oss;
-        oss << "HTTP/1.1 500 Internal Server Error\r\n";
-        oss << "Content-Type: text/html\r\n";
-        oss << "Content-Length: " << body.size() << "\r\n\r\n";
-        oss << body;
+		oss << "HTTP/1.1 500 Internal Server Error\r\n";
+		oss << "Content-Type: text/html\r\n";
+		oss << "Content-Length: " << body.size() << "\r\n";
+		oss << "Connection: close\r\n\r\n";  // ← 追加
+		oss << body;
         queueSend(clientFd, oss.str());
     }
     else
@@ -1087,6 +1099,7 @@ std::string Server::buildHttpResponseFromCgi(const std::string &cgiOutput)
     std::ostringstream oss;
     oss << statusLine << "\r\n";
     oss << "Content-Length: " << content.size() << "\r\n";
+	oss << "Connection: close\r\n";  // ← ここで明示的に追加
     oss << filteredHeaders.str();
     oss << "\r\n" << content;
 
@@ -1125,6 +1138,10 @@ void Server::handleClientSend(int index)
             // n <= 0 の場合は無視して次の POLLOUT で再送
             break;
         }
+		// 送信完了かつ Connection: close の場合は接続を閉じる
+		if (client.sendBuffer.empty()) {
+			handleConnectionClose(fd);
+		}
     }
 }
 
@@ -1211,7 +1228,8 @@ std::string Server::extractNextRequest(std::string &recvBuffer,
 		{
 			std::string res =
 				"HTTP/1.1 411 Length Required\r\n"
-				"Content-Length: 0\r\n\r\n";
+				"Content-Length: 0\r\n"
+				"Connection: close\r\n\r\n"; // ← 追加
 			queueSend(fd, res);
 		}
 

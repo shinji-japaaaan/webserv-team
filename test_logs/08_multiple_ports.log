@@ -4,10 +4,10 @@ Server listening on port 8088
 Initialized server on 127.0.0.1:8088 (root=./www/)
 New client connected: fd=5
 Request complete from fd=5
-[log_1164043_0] 0: Client disconnected: fd=5
+[INFO] Closing connection fd=5
 New client connected: fd=5
 Request complete from fd=5
-[log_1164043_1] 0: Client disconnected: fd=5
+[INFO] Closing connection fd=5
 New client connected: fd=5
 Request complete from fd=5
-[log_1164043_2] 0: Client disconnected: fd=5
+[INFO] Closing connection fd=5

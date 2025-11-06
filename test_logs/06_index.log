@@ -2,10 +2,7 @@ Server listening on port 8085
 Initialized server on 127.0.0.1:8085 (root=./www/)
 New client connected: fd=4
 Request complete from fd=4
-[log_1164016_0] 0: Client disconnected: fd=4
+[INFO] Closing connection fd=4
 New client connected: fd=4
 Request complete from fd=4
-[log_1164016_1] 0: Client disconnected: fd=4
-New client connected: fd=4
-Request complete from fd=4
-[log_1164016_2] 0: Client disconnected: fd=4
+[INFO] Closing connection fd=4

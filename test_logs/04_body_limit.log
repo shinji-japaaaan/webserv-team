@@ -2,9 +2,6 @@ Server listening on port 8083
 Initialized server on 127.0.0.1:8083 (root=./docs/)
 New client connected: fd=4
 Request complete from fd=4
-[log_1163945_0] 0: Client disconnected: fd=4
+[INFO] Closing connection fd=4
 New client connected: fd=4
-Request complete from fd=4
-[log_1163945_1] 0: Client disconnected: fd=4
-New client connected: fd=4
-[log_1163945_2] 0: Client disconnected: fd=4
+[INFO] Closing connection fd=4

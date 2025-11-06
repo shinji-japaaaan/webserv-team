@@ -108,6 +108,7 @@ void Server::sendGatewayTimeout(int clientFd) {
         "HTTP/1.1 504 Gateway Timeout\r\n"
         "Content-Length: 60\r\n"
         "Content-Type: text/html\r\n\r\n"
+        "Connection: close\r\n\r\n" // ← 追加
         "<html><body><h1>504 Gateway Timeout</h1>"
         "<p>The CGI script did not respond in time.</p></body></html>";
 
