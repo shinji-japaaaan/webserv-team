@@ -4,10 +4,10 @@ Server listening on port 8081
 Initialized server on 127.0.0.1:8081 (root=./www/)
 New client connected: fd=5
 Request complete from fd=5
-[2025-11-6 7:8:1] INFO: Client disconnected: fd=5
+[2025-11-6 20:0:44] INFO: Client disconnected: fd=5
 New client connected: fd=5
 Request complete from fd=5
-[2025-11-6 7:8:1] INFO: Client disconnected: fd=5
+[2025-11-6 20:0:44] INFO: Client disconnected: fd=5
 New client connected: fd=5
 Request complete from fd=5
-[2025-11-6 7:8:1] INFO: Client disconnected: fd=5
+[2025-11-6 20:0:44] INFO: Client disconnected: fd=5

@@ -1,0 +1,27 @@
+Summary
+  ✅ [01] Multiple ports — 8080 GET /  (200)
+  ✅ [01] Multiple ports — 8081 GET /  (200)
+  ✅ [02] Hostnames (port-based) — example.local GET /  (200)
+  ✅ [02] Hostnames (port-based) — demo.local GET /  (200)
+  ✅ [03] Custom error pages — GET /notfound  (404)
+  ❌ [04] Body limit & upload — small POST form  (expected 200, got 201)  [http://127.0.0.1:8083/upload/]
+  ✅ [04] Body limit & upload — big POST > limit  (413)
+  ❌ [05] Routes & redirect — GET /docs/  (expected 200, got 404)  [http://127.0.0.1:8084/docs/]
+  ❌ [05] Routes & redirect — redirect 301  (expected 301, got 405)  [http://127.0.0.1:8084/redirect/]
+  ⏭️  [05] Routes & redirect — GET /img/  (got 404)  [http://127.0.0.1:8084/img/]
+  ✅ [06] Index & autoindex — GET /  (200)
+  ⏭️  [06] Index & autoindex — GET /list/  (got 404)  [http://127.0.0.1:8085/list/]
+  ❌ [07] Methods — GET /readonly/  (expected 200, got 404)  [http://127.0.0.1:8086/readonly/]
+  ✅ [07] Methods — POST /readonly/  (405)
+  ✅ [07] Methods — DELETE /delete/file.txt  (204)
+  ✅ [07] Methods — POST /upload/ (small)  (201)
+  ✅ [08] Multiple ports (same site) — GET 8087 /  (200)
+  ✅ [08] Multiple ports (same site) — GET 8088 /  (200)
+  ✅ [09] Same port on two servers — bind conflict  (no running process)
+  ✅ [10] Multiple servers (static/upload/cgi) — GET 8090 /  (200)
+  ✅ [10] Multiple servers (static/upload/cgi) — POST 8091 /upload/ (small)  (201)
+  ✅ [10] Multiple servers (static/upload/cgi) — POST 8091 big > limit  (413)
+  ❌ [10] Multiple servers (static/upload/cgi) — GET 8092 /cgi-bin/  (expected 200, got 404)  [http://127.0.0.1:8092/cgi-bin/]
+-----------------------------
+
+PASS: 16, FAIL: 5, SKIP: 2
