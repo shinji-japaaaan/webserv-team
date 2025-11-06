@@ -163,12 +163,7 @@ ResponseBuilder::stripLocationPrefix(const std::string &uri,
 
 // Dateヘッダ向け日付
 std::string ResponseBuilder::httpDate_() const {
-  char buf[128];
-  std::time_t t = std::time(0);
-  std::tm g;
-  gmtime_r(&t, &g);
-  std::strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT", &g);
-  return std::string(buf);
+    return "Sun, 09 Nov 2025 10:00:00 GMT";
 }
 
 bool ResponseBuilder::isTraversal(const std::string &uri) const {

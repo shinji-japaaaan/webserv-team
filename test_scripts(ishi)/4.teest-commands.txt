@@ -1,6 +1,7 @@
+curl -i http://localhost:8080/cgi-bin/test.php 
+.www/cgi-bin/test.php
 <?php
 // タイムアウトテスト。故意に5秒待つ
 sleep(10);
 echo "Hello World";
 ?>
-
