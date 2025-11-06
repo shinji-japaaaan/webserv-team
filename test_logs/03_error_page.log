@@ -2,7 +2,7 @@ Server listening on port 8082
 Initialized server on 127.0.0.1:8082 (root=./www/)
 New client connected: fd=4
 Request complete from fd=4
-[2025-11-6 20:0:44] INFO: Client disconnected: fd=4
+[log_1163932_0] 0: Client disconnected: fd=4
 New client connected: fd=4
 Request complete from fd=4
-[2025-11-6 20:0:44] INFO: Client disconnected: fd=4
+[log_1163932_1] 0: Client disconnected: fd=4

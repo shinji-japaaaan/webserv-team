@@ -329,28 +329,16 @@ void Server::processRequest(int fd, Request &req,
 	clients[fd].recvBuffer.erase(0, reqSize);
 }
 
-std::string generateUniqueFilename()
-{
-	// 現在時刻を取得
-	std::time_t t = std::time(NULL);
-	std::tm *now = std::localtime(&t);
+std::string generateUniqueFilename() {
+    static unsigned long counter = 0;
 
-	std::ostringstream oss;
+    // プロセスIDとカウンタで擬似一意化
+    int pid = getpid();
+    int randNum = std::rand() % 10000;
 
-	// 年月日_時分秒（ゼロ埋め）
-	oss.fill('0');
-	oss << (now->tm_year + 1900) << std::setw(2) << (now->tm_mon + 1)
-		<< std::setw(2) << now->tm_mday << "_" << std::setw(2) << now->tm_hour
-		<< std::setw(2) << now->tm_min << std::setw(2) << now->tm_sec;
-
-	// 乱数付与（0〜9999）
-	int randNum = std::rand() % 10000;
-	oss << "_" << randNum;
-
-	// ファイル拡張子
-	oss << ".txt";
-
-	return oss.str();
+    std::ostringstream oss;
+    oss << "file_" << pid << "_" << counter++ << "_" << randNum << ".txt";
+    return oss.str();
 }
 
 std::string buildHttpResponse(int statusCode, const std::string &body,
@@ -406,38 +394,30 @@ void Server::handlePost(int fd, Request &req, const ServerConfig::Location *loc)
 	}
 }
 
-void saveBodyToFile(const std::string &body, const std::string &uploadDir)
-{
-	// 現在時刻
-	std::time_t t = std::time(NULL);
-	std::tm tm = *std::localtime(&t);
+void saveBodyToFile(const std::string &body, const std::string &uploadDir) {
+    static unsigned long counter = 0;
+    int pid = getpid();
+    int randNum = std::rand() % 10000;
 
-	// ファイル名生成
-	std::ostringstream oss;
-	oss << uploadDir;
-	if (!uploadDir.empty() && uploadDir[uploadDir.size() - 1] != '/' && uploadDir[uploadDir.size() - 1] != '\\')
-		oss << '/';
+    std::ostringstream oss;
+    oss << uploadDir;
+    if (!uploadDir.empty() && uploadDir[uploadDir.size() - 1] != '/')
+        oss << '/';
 
-	char buf[32];
-	std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &tm);
-	oss << "POST_" << buf;
+    oss << "POST_" << pid << "_" << counter++ << "_" << randNum << ".txt";
 
-	static int counter = 0;
-	oss << "_" << counter++ << ".txt";
+    std::string filename = oss.str();
 
-	std::string filename = oss.str();
+    std::ofstream ofs(filename.c_str(), std::ios::binary);
+    if (!ofs.is_open()) {
+        std::cerr << "Failed to open file for writing: " << filename << std::endl;
+        return;
+    }
 
-	std::ofstream ofs(filename.c_str(), std::ios::binary);
-	if (!ofs.is_open())
-	{
-		std::cerr << "Failed to open file for writing: " << filename << std::endl;
-		return;
-	}
+    ofs.write(body.c_str(), body.size());
+    ofs.close();
 
-	ofs.write(body.c_str(), body.size());
-	ofs.close();
-
-	std::cout << "[INFO] Saved POST body to: " << filename << std::endl;
+    std::cout << "[INFO] Saved POST body to: " << filename << std::endl;
 }
 
 void Server::handleChunkedBody(int fd, Request &req, const ServerConfig::Location *loc)
@@ -483,51 +463,48 @@ std::string urlDecode(const std::string &str)
 
 // x-www-form-urlencoded を処理する関数
 void Server::handleUrlEncodedForm(int fd, Request &req,
-								  const ServerConfig::Location *loc)
+                                  const ServerConfig::Location *loc)
 {
-	std::map<std::string, std::string> formData;
-	std::stringstream ss(req.body);
-	std::string pair;
+    std::map<std::string, std::string> formData;
+    std::stringstream ss(req.body);
+    std::string pair;
 
-	// key=value に分解
-	while (std::getline(ss, pair, '&'))
-	{
-		size_t eqPos = pair.find('=');
-		if (eqPos != std::string::npos)
-		{
-			std::string key = urlDecode(pair.substr(0, eqPos));
-			std::string value = urlDecode(pair.substr(eqPos + 1));
-			formData[key] = value;
-		}
-	}
+    while (std::getline(ss, pair, '&')) {
+        size_t eqPos = pair.find('=');
+        if (eqPos != std::string::npos) {
+            std::string key = urlDecode(pair.substr(0, eqPos));
+            std::string value = urlDecode(pair.substr(eqPos + 1));
+            formData[key] = value;
+        }
+    }
 
-	// ファイル保存パスが設定されていれば保存
-	if (!loc->upload_path.empty())
-	{
-		std::ostringstream filenameStream;
-		filenameStream << loc->upload_path << "/form_" << time(NULL) << ".txt";
-		std::string filename = filenameStream.str();
+    if (!loc->upload_path.empty()) {
+        static unsigned long counter = 0;
+        int pid = getpid();
+        int randNum = std::rand() % 10000;
 
-		std::ofstream ofs(filename.c_str());
-		if (!ofs)
-		{
-			std::string res = buildHttpResponse(500, "Internal Server Error\n");
-			queueSend(fd, res);
-			return;
-		}
+        std::ostringstream filenameStream;
+        filenameStream << loc->upload_path
+                       << "/form_" << pid << "_" << counter++ << "_" << randNum
+                       << ".txt";
+        std::string filename = filenameStream.str();
 
-		for (std::map<std::string, std::string>::const_iterator it =
-				 formData.begin();
-			 it != formData.end(); ++it)
-		{
-			ofs << it->first << "=" << it->second << "\n";
-		}
-		ofs.close();
-	}
+        std::ofstream ofs(filename.c_str());
+        if (!ofs) {
+            std::string res = buildHttpResponse(500, "Internal Server Error\n");
+            queueSend(fd, res);
+            return;
+        }
 
-	std::string responseBody = "Form received successfully\n";
-	std::string res = buildHttpResponse(201, responseBody);
-	queueSend(fd, res);
+        for (std::map<std::string, std::string>::const_iterator it = formData.begin();
+             it != formData.end(); ++it) {
+            ofs << it->first << "=" << it->second << "\n";
+        }
+        ofs.close();
+    }
+
+    std::string res = buildHttpResponse(201, "Form received successfully\n");
+    queueSend(fd, res);
 }
 
 std::string extractBoundary(const std::string &contentType)
@@ -860,8 +837,7 @@ void Server::registerCgiProcess(int clientFd, pid_t pid,
         proc.events |= POLLOUT;  // 書き込み残があれば POLLOUT 追加
 
     // 5. CGI 管理マップに登録
-    proc.elapsedLoops = 0;
-    proc.startTime = time(NULL);
+    proc.remainingMs = 5000; // タイムアウト5秒
     cgiMap[outFd] = proc;
 }
 

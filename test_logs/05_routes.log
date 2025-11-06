@@ -2,13 +2,13 @@ Server listening on port 8084
 Initialized server on 127.0.0.1:8084 (root=./www/)
 New client connected: fd=4
 Request complete from fd=4
-[2025-11-6 20:0:50] INFO: Client disconnected: fd=4
+[log_1164003_0] 0: Client disconnected: fd=4
 New client connected: fd=4
 Request complete from fd=4
-[2025-11-6 20:0:50] INFO: Client disconnected: fd=4
+[log_1164003_1] 0: Client disconnected: fd=4
 New client connected: fd=4
 Request complete from fd=4
-[2025-11-6 20:0:50] INFO: Client disconnected: fd=4
+[log_1164003_2] 0: Client disconnected: fd=4
 New client connected: fd=4
 Request complete from fd=4
-[2025-11-6 20:0:50] INFO: Client disconnected: fd=4
+[log_1164003_3] 0: Client disconnected: fd=4

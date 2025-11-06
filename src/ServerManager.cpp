@@ -40,13 +40,11 @@ bool ServerManager::initAllServers() {
 // 全ServerのFDを1つのpoll配列で管理する
 // ----------------------------
 void ServerManager::runAllServers() {
-    const int pollTimeoutMs = 100;
-    const int cgiTimeoutSeconds = 5;
+    const int pollTimeoutMs = 100;     // pollごとのスライス
 
     while (true) {
         std::vector<PollEntry> entries = buildPollEntries();
 
-        // pollfd を vector で確保
         std::vector<pollfd> fds(entries.size());
         for (size_t i = 0; i < entries.size(); ++i) {
             fds[i].fd = entries[i].fd;
@@ -64,11 +62,10 @@ void ServerManager::runAllServers() {
 
         // --- CGI タイムアウト処理 ---
         for (size_t i = 0; i < servers.size(); ++i) {
-            servers[i]->checkCgiTimeouts(cgiTimeoutSeconds);
+            servers[i]->checkCgiTimeouts(pollTimeoutMs);
         }
     }
 }
-
 
 // 送信待ちデータがあるか確認
 bool Server::hasPendingSend(int fd) const {
@@ -77,31 +74,28 @@ bool Server::hasPendingSend(int fd) const {
     return !it->second.sendBuffer.empty();  // sendBuffer が空でなければ true
 }
 
-void Server::checkCgiTimeouts(int timeoutSeconds) {
-    time_t now = time(NULL);
-    for (std::map<int, CgiProcess>::iterator it = cgiMap.begin(); it != cgiMap.end(); ) {
+void Server::checkCgiTimeouts(int elapsedMs) {
+    for (std::map<int, CgiProcess>::iterator it = cgiMap.begin();
+         it != cgiMap.end();) {
         CgiProcess &proc = it->second;
 
-        if (now - proc.startTime > timeoutSeconds) {
+        // 残り時間を減算
+        proc.remainingMs -= elapsedMs;
+
+        // タイムアウト発生
+        if (proc.remainingMs <= 0) {
             std::cerr << "[CGI Timeout] pid=" << proc.pid
                       << " fd=" << it->first << std::endl;
 
-            // --- 強制終了 ---
             kill(proc.pid, SIGKILL);
-
-            // --- 504レスポンス ---
             sendGatewayTimeout(proc.clientFd);
 
-            // --- FDクローズ ---
             if (proc.inFd > 0) close(proc.inFd);
             if (proc.outFd > 0) close(proc.outFd);
 
-            // --- 子プロセス回収 ---
             waitpid(proc.pid, NULL, 0);
 
-            // --- マップから削除 ---
-            std::map<int, CgiProcess>::iterator tmp = it;
-            ++it;  // erase する前に次のイテレータを確保
+            std::map<int, CgiProcess>::iterator tmp = it++;
             cgiMap.erase(tmp);
         } else {
             ++it;
