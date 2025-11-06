@@ -304,7 +304,9 @@ echo
 echo -e "\033[1;36m===== 🧩 DIFF Summary since last run =====\033[0m"
 
 if [ -f test_logs_prev/summary.log ]; then
-  diff -u --color=always test_logs_prev/summary.log test_logs/summary.log | less -R
+  if diff -u --color=always test_logs_prev/summary.log test_logs/summary.log | cat; then
+    echo -e "\033[1;32m✅ No differences found since last run.\033[0m"
+  fi
 else
   echo "⚠️  No previous summary to compare (first run)."
 fi
