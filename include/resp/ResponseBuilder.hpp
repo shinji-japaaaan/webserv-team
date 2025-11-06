@@ -69,6 +69,7 @@ public:
                                     const std::string &locPath) const;
     std::string resolvePathForGet(const std::string &docRoot,
                                   const std::string &relativeUri,
+                                  const std::string &locationPath,
                                   bool &isDirOut) const;
     std::string resolvePathForDelete(const std::string &docRoot,
                                      const std::string &relativeUri) const;
@@ -81,7 +82,7 @@ public:
 
   // ★ここを追加：内部用の3引数版は private ヘルパとして別名にする
   std::string handleGetLikeCore(const Request&, const ServerConfig&,
-                                const ServerConfig::Location*);
+                                const ServerConfig::Location*, const std::string &locPath);
   std::string handleDeleteCore(const Request&, const ServerConfig&,
                                const ServerConfig::Location*);
 };
