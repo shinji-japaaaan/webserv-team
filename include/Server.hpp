@@ -72,7 +72,8 @@ private:
 	// クライアント受信処理
 	// -----------------------------
 	void handleClient(int index);
-	std::string extractNextRequest(std::string &recvBuffer, Request &currentRequest);
+	std::string extractNextRequest(int clientFd, std::string &recvBuffer,
+									   Request &currentRequest);
 	bool isMethodAllowed(const std::string &method,
 						 const ServerConfig::Location *loc);
 	bool checkMaxBodySize(int fd, int bytes, const ServerConfig::Location *loc);

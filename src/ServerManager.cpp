@@ -51,7 +51,7 @@ void ServerManager::runAllServers() {
             fds[i].events = entries[i].events;
             fds[i].revents = 0;
         }
-
+        
         int ret = poll(&fds[0], fds.size(), pollTimeoutMs);
         if (ret < 0) {
             perror("poll");

@@ -1,9 +1,17 @@
 #include "../include/RequestParser.hpp"
 
 bool RequestParser::isRequestComplete(const std::string &buffer) {
-    size_t headerEnd = buffer.find("\r\n\r\n");
-    if (headerEnd == std::string::npos)
+    if (buffer.empty())
         return false;
+    
+    size_t headerEnd = buffer.find("\r\n\r\n");
+    
+     // --- 不正・非HTTPデータ対策 ---
+    if (headerEnd == std::string::npos) {
+        if (isClearlyInvalidRequest(buffer))
+            return true;
+        return false;
+    }
 
     std::string headerPart = buffer.substr(0, headerEnd);
     std::map<std::string, std::string> headers = parseHeaders(headerPart);
@@ -24,6 +32,23 @@ bool RequestParser::isRequestComplete(const std::string &buffer) {
         return bodyPart.find("0\r\n\r\n") != std::string::npos;
     else
         return bodyPart.size() >= contentLength;
+}
+
+// --- 非HTTP・不正データを早期判定する補助関数 ---
+bool RequestParser::isClearlyInvalidRequest(const std::string &buffer) {
+    // 改行があれば完了扱い（例: "BAD_REQUEST\n"）
+    if (buffer.find("\n") != std::string::npos)
+        return true;
+
+    // 明らかにHTTPでない1行メッセージ（例: "HELLO", "BAD_REQUEST"）
+    if (buffer.size() < 64 && buffer.find(' ') == std::string::npos)
+        return true;
+
+    // 異常に長い（DoS防止）
+    if (buffer.size() > 8192)
+        return true;
+
+    return false;
 }
 
 RequestParser::RequestParser()
@@ -70,11 +95,9 @@ std::string unchunkBody(const std::string &chunkedBody) {
     return unchunked;
 }
 
-
 Request RequestParser::parse(const std::string &buffer) {
     Request req;
     parsedLength = 0;
-	// std::cout << "==========raw data===========\n" << buffer << "=====End Raw Data=====" << std::endl ;
 
     size_t headerEnd = buffer.find("\r\n\r\n");
     if (headerEnd == std::string::npos)
@@ -88,9 +111,23 @@ Request RequestParser::parse(const std::string &buffer) {
 
     std::istringstream lineStream(headerPart);
     std::string requestLine;
-    std::getline(lineStream, requestLine);
+    if (!std::getline(lineStream, requestLine) || requestLine.empty()) {
+		req.method.clear(); // ← 明示的に不正を示す
+		return req;
+	}
+
     std::istringstream requestLineStream(requestLine);
     requestLineStream >> req.method >> req.uri >> req.version;
+    // --- ✅ 妥当性チェック ---
+	if (req.method.empty() || req.uri.empty() || req.version.empty()) {
+		req.method.clear(); // 不正リクエストの印
+		return req;
+	}
+    // 例: "HTTP/" で始まらないなら不正
+	if (req.version.find("HTTP/") != 0) {
+		req.method.clear();
+		return req;
+	}
 
     bool isChunked = false;
     if (req.headers.find("transfer-encoding") != req.headers.end() &&
@@ -98,13 +135,21 @@ Request RequestParser::parse(const std::string &buffer) {
         isChunked = true;
 
     if (isChunked) {
-        req.body = bodyPart.substr(0, bodyPart.find("0\r\n\r\n") + 5);
+        size_t chunkEnd = bodyPart.find("0\r\n\r\n");
+		if (chunkEnd == std::string::npos) {
+			req.method.clear(); // チャンク終端がない → 不正
+			return req;
+		}
         req.body = unchunkBody(req.body);
         parsedLength = headerEnd + 4 + bodyPart.find("0\r\n\r\n") + 5;
     } else {
         std::map<std::string, std::string>::iterator it = req.headers.find("content-length");
         if (it != req.headers.end()) {
             size_t len = std::strtoul(it->second.c_str(), NULL, 10);
+            if (bodyPart.size() < len) {
+				req.method.clear(); // 不正（ボディが足りない）
+				return req;
+			}
             req.body = bodyPart.substr(0, len);
             parsedLength = headerEnd + 4 + len;
         } else {
