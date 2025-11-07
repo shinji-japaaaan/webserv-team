@@ -1210,47 +1210,47 @@ void Server::handleDisconnect(int fd, int index, int bytes)
 // ----------------------------
 
 std::string Server::extractNextRequest(int clientFd, std::string &recvBuffer,
-									   Request &currentRequest)
+                                       Request &currentRequest)
 {
-	RequestParser parser;
-	if (!parser.isRequestComplete(recvBuffer))
-	{
-		return "";
-	}
-	currentRequest = parser.parse(recvBuffer);
-	// ✅ 不正リクエストの検知
-	if (currentRequest.method.empty()) {
-		std::string body = "Bad Request\n";
-		std::ostringstream res;
-		res << "HTTP/1.1 400 Bad Request\r\n"
-			<< "Content-Length: " << body.size() << "\r\n"
-			<< "Content-Type: text/plain\r\n"
-			<< "Connection: close\r\n\r\n"
-			<< body;
-		queueSend(clientFd, res.str());
-		recvBuffer.clear();
-		return "";
-	}
-	// printRequest(currentRequest);
-	if (currentRequest.method == "POST" &&
-		currentRequest.headers.find("content-length") == currentRequest.headers.end() &&
-		currentRequest.headers.find("transfer-encoding") == currentRequest.headers.end())
-	{
-		std::string body = "Length Required\n";
-		std::ostringstream res;
-		res << "HTTP/1.1 411 Length Required\r\n"
-			<< "Content-Length: " << body.size() << "\r\n"
-			<< "Content-Type: text/plain\r\n"
-			<< "Connection: close\r\n\r\n"
-			<< body;
-		queueSend(clientFd, res.str());
-		recvBuffer.erase(0, parser.getParsedLength()); // 今回分を削除
-		return "";
-	}
-	// 🔸 正常時 → 1リクエスト分を返す
-	std::string completeRequest = recvBuffer.substr(0, parser.getParsedLength());
-	recvBuffer.erase(0, parser.getParsedLength());
-	return completeRequest;
+    RequestParser parser;
+    if (!parser.isRequestComplete(recvBuffer))
+        return "";
+
+    currentRequest = parser.parse(recvBuffer);
+
+    // --- 不正リクエストかどうかをチェック ---
+    if (currentRequest.method.empty()) {
+        sendHttpError(clientFd, 400, "Bad Request", parser.getParsedLength(), recvBuffer);
+        return "";
+    }
+
+    // --- POST の長さチェック ---
+    if (currentRequest.method == "POST" &&
+        currentRequest.headers.find("content-length") == currentRequest.headers.end() &&
+        currentRequest.headers.find("transfer-encoding") == currentRequest.headers.end())
+    {
+        sendHttpError(clientFd, 411, "Length Required", parser.getParsedLength(), recvBuffer);
+        return "";
+    }
+
+    // --- 正常リクエスト ---
+    std::string completeRequest = recvBuffer.substr(0, parser.getParsedLength());
+    recvBuffer.erase(0, parser.getParsedLength());
+    return completeRequest;
+}
+
+// ヘルパー関数: HTTPエラー送信 + バッファ調整
+void Server::sendHttpError(int clientFd, int status, const std::string &msg,
+                           size_t parsedLength, std::string &recvBuffer)
+{
+    std::ostringstream res;
+    res << "HTTP/1.1 " << status << " " << msg << "\r\n"
+        << "Content-Length: " << msg.size() << "\r\n"
+        << "Content-Type: text/plain\r\n"
+        << "Connection: close\r\n\r\n"
+        << msg;
+    queueSend(clientFd, res.str());
+    recvBuffer.erase(0, parsedLength);
 }
 
 int Server::findFdByRecvBuffer(const std::string &buffer) const
