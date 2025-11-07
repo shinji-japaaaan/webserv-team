@@ -73,6 +73,7 @@ private:
 	void handleClient(int index);
 	std::string extractNextRequest(int clientFd, std::string &recvBuffer,
 									   Request &currentRequest);
+	bool isContentLengthExceeded(const Request &req, const std::string &recvBuffer);
 	void sendHttpError(int clientFd, int status, const std::string &msg,
 					   size_t parsedLength, std::string &recvBuffer);		
 	bool isMethodAllowed(const std::string &method,

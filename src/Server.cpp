@@ -475,47 +475,56 @@ std::string urlDecode(const std::string &str)
 void Server::handleUrlEncodedForm(int fd, Request &req,
                                   const ServerConfig::Location *loc)
 {
-    std::map<std::string, std::string> formData;
-    std::stringstream ss(req.body);
-    std::string pair;
-
-    while (std::getline(ss, pair, '&')) {
-        size_t eqPos = pair.find('=');
-        if (eqPos != std::string::npos) {
-            std::string key = urlDecode(pair.substr(0, eqPos));
-            std::string value = urlDecode(pair.substr(eqPos + 1));
-            formData[key] = value;
-        }
+    if (loc->upload_path.empty()) {
+        std::string res = buildHttpResponse(400, "No upload path configured\n");
+        queueSend(fd, res);
+        return;
     }
 
-    if (!loc->upload_path.empty()) {
-        static unsigned long counter = 0;
-        int pid = getpid();
-        int randNum = std::rand() % 10000;
+    // ファイル名生成
+    static unsigned long counter = 0;
+    int pid = getpid();
+    int randNum = std::rand() % 10000;
 
-        std::ostringstream filenameStream;
-        filenameStream << loc->upload_path
-                       << "/form_" << pid << "_" << counter++ << "_" << randNum
-                       << ".txt";
-        std::string filename = filenameStream.str();
+    std::ostringstream filenameStream;
+    filenameStream << loc->upload_path
+                   << "/form_" << pid << "_" << counter++ << "_" << randNum
+                   << ".txt";
+    std::string filename = filenameStream.str();
 
-        std::ofstream ofs(filename.c_str());
-        if (!ofs) {
-            std::string res = buildHttpResponse(500, "Internal Server Error\n");
-            queueSend(fd, res);
-            return;
-        }
-
-        for (std::map<std::string, std::string>::const_iterator it = formData.begin();
-             it != formData.end(); ++it) {
-            ofs << it->first << "=" << it->second << "\n";
-        }
-        ofs.close();
+    std::ofstream ofs(filename.c_str());
+    if (!ofs) {
+        std::string res = buildHttpResponse(500, "Internal Server Error\n");
+        queueSend(fd, res);
+        return;
     }
+
+    std::string &body = req.body;
+    size_t pos = 0;
+
+    while (pos < body.size()) {
+        size_t amp = body.find('&', pos);
+        if (amp == std::string::npos) amp = body.size();
+
+        size_t eq = body.find('=', pos);
+        if (eq != std::string::npos && eq < amp) {
+            std::string key = urlDecode(body.substr(pos, eq - pos));
+            std::string value = urlDecode(body.substr(eq + 1, amp - eq - 1));
+            ofs << key << "=" << value << "\n";
+        } else {
+            // key=value 形式でない場合はそのまま書き込む
+            ofs << body.substr(pos, amp - pos) << "\n";
+        }
+
+        pos = amp + 1;
+    }
+
+    ofs.close();
 
     std::string res = buildHttpResponse(201, "Form received successfully\n");
     queueSend(fd, res);
 }
+
 
 std::string extractBoundary(const std::string &contentType)
 {
@@ -1220,6 +1229,12 @@ std::string Server::extractNextRequest(int clientFd, std::string &recvBuffer,
 
     currentRequest = parser.parse(recvBuffer);
 
+	// // --- Content-Length 超過チェック ---
+	// if (isContentLengthExceeded(currentRequest, recvBuffer)) {
+	// 	sendHttpError(clientFd, 400, "Bad Request", parser.getParsedLength(), recvBuffer);
+	// 	return "";
+	// }
+
     // --- 不正リクエストかどうかをチェック ---
     if (currentRequest.method.empty()) {
         sendHttpError(clientFd, 400, "Bad Request", parser.getParsedLength(), recvBuffer);
@@ -1239,6 +1254,23 @@ std::string Server::extractNextRequest(int clientFd, std::string &recvBuffer,
     std::string completeRequest = recvBuffer.substr(0, parser.getParsedLength());
     recvBuffer.erase(0, parser.getParsedLength());
     return completeRequest;
+}
+
+bool Server::isContentLengthExceeded(const Request &req,
+                                     const std::string &recvBuffer) {
+    std::map<std::string, std::string>::const_iterator it =
+        req.headers.find("content-length");
+    if (it == req.headers.end())
+        return false; // Content-Lengthがない
+
+    size_t declaredLength = std::strtoul(it->second.c_str(), NULL, 10);
+
+    size_t headerEnd = recvBuffer.find("\r\n\r\n");
+    if (headerEnd == std::string::npos)
+        return false;
+
+    size_t bodySize = recvBuffer.size() - (headerEnd + 4);
+    return bodySize > declaredLength;
 }
 
 // ヘルパー関数: HTTPエラー送信 + バッファ調整
