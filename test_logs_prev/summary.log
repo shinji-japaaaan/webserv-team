@@ -4,7 +4,7 @@ Summary
   ✅ [02] Hostnames (port-based) — example.local GET /  (200)
   ✅ [02] Hostnames (port-based) — demo.local GET /  (200)
   ✅ [03] Custom error pages — GET /notfound  (404)
-  ❌ [04] Body limit & upload — small POST form  (expected 200, got 201)  [http://127.0.0.1:8083/upload/]
+  ❌ [04] Body limit & upload — small POST form  (expected 200, got 500)  [http://127.0.0.1:8083/upload/]
   ✅ [04] Body limit & upload — big POST > limit  (413)
   ✅ [05] Routes & redirect — GET /docs/  (200)
   ✅ [05] Routes & redirect — redirect 301  (301)

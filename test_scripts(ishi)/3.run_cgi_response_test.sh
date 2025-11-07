@@ -4,7 +4,7 @@
 # ============================
 
 SERVER_BIN=./webserv
-CONF=conf/test(ishi).conf
+CONF=conf/test.conf
 PORT=8080
 
 echo "🚀 Starting webserv..."
