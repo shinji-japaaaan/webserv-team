@@ -48,7 +48,6 @@ std::string unchunkBody(const std::string &chunkedBody) {
         // 先頭行が余計なデータの場合は無視
         if (firstLine) {
             firstLine = false;
-            std::cout << "[DEBUG] skipping first line: '" << line << "'" << std::endl;
             continue;
         }
 

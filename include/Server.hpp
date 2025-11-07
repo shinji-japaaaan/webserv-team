@@ -17,6 +17,7 @@
 #include "ClientInfo.hpp"
 #include "RequestParser.hpp"
 #include "ConfigParser.hpp"
+#include "CgiProcess.hpp"
 
 #define MAX_CLIENTS 100
 
@@ -49,18 +50,6 @@ private:
 	// -----------------------------
 	// ここから追加：CGI対応用
 	// -----------------------------
-	struct CgiProcess
-	{
-		pid_t pid;
-		int inFd;	  // CGIへの書き込み用
-		int outFd;	  // CGIからの読み取り用
-		int clientFd; // ←追加: このCGIリクエストのクライアントFD
-		Request req;
-		std::string buffer; // ←追加: CGI出力を一時的に蓄積
-		int elapsedLoops;	// poll ループ数タイムアウト用
-		bool activeInLastPoll;
-		time_t startTime; // CGIプロセス開始時刻
-	};
 	std::map<int, CgiProcess> cgiMap; // key: outFd, value: 管理情報
 
 	// -----------------------------
@@ -68,6 +57,7 @@ private:
 	// -----------------------------
 	bool createSocket();
 	bool bindAndListen();
+	bool setNonBlocking(int fd);
 
 	// -----------------------------
 	// 接続処理
@@ -76,6 +66,7 @@ private:
 	int acceptClient(); // accept + nonblocking設定
 	void handleDisconnect(int fd, int index, int bytes);
 	void handleConnectionClose(int fd);
+	void handleServerError(int fd);
 
 	// -----------------------------
 	// クライアント受信処理
@@ -103,11 +94,15 @@ private:
 	// -----------------------------
 	bool isCgiRequest(const Request &req);													   // CGI判定関数
 	void startCgiProcess(int clientFd, const Request &req, const ServerConfig::Location &loc); // CGI実行関数
-	void handleCgiOutput(int outFd);														   // pollで読み取り可能になったCGI出力を処理
+	void handleCgiOutput(int outFd);
+	void handleCgiClose(int outFd);
+	void handleCgiError(int outFd);	
+	void handleCgiInput(int fd);										   
 	std::string buildHttpResponseFromCgi(const std::string &cgiOutput);
-	void registerCgiProcess(int clientFd, pid_t pid, int outFd,
-							const std::string &body, std::map<int, Server::CgiProcess> &cgiMap,
-							pollfd fds[], int &nfds);
+	std::string buildHttpErrorPage(int code, const std::string &message);
+	void registerCgiProcess(int clientFd, pid_t pid,
+								int inFd, int outFd, const std::string &body,
+								std::map<int, CgiProcess> &cgiMap);
 
 	Server::LocationMatch getLocationForUri(const std::string &uri) const;
 	void sendGatewayTimeout(int clientFd);
@@ -136,6 +131,7 @@ public:
 
 	int getServerFd() const;
 	std::vector<int> getClientFds() const;
+	CgiProcess* getCgiProcess(int fd);
 
 	// ServerManager から呼ばれる安全な公開インターフェース
 	void onPollEvent(int fd, short revents);

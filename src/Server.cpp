@@ -9,6 +9,7 @@
 #include <sstream>
 #include <sys/wait.h>
 #include <utility>
+#include "CgiProcess.hpp"
 
 // ----------------------------
 // コンストラクタ・デストラクタ
@@ -55,35 +56,36 @@ bool Server::createSocket()
 	serverFd = socket(AF_INET, SOCK_STREAM, 0);
 	if (serverFd < 0)
 	{
-		logMessage(ERROR, std::string("socket() failed: ") + strerror(errno));
-		perror("socket");
+		logMessage(ERROR, "socket() failed: " + std::string(strerror(errno)));
 		return false;
 	}
 
 	int opt = 1;
 	if (setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
 	{
-		logMessage(ERROR, std::string("setsockopt() failed: ") + strerror(errno));
-		perror("setsockopt");
+		logMessage(ERROR, "setsockopt() failed: " + std::string(strerror(errno)));
 		return false;
 	}
-	int flags = fcntl(serverFd, F_GETFL, 0);
-	if (flags == -1)
-	{
-		logMessage(ERROR, std::string("fcntl(F_GETFL) failed: ") + strerror(errno));
-		perror("fcntl get");
-		return false;
-	}
-
-	if (fcntl(serverFd, F_SETFL, flags | O_NONBLOCK) == -1)
-	{
-		logMessage(ERROR,
-				   std::string("fcntl(O_NONBLOCK) failed: ") + strerror(errno));
-		perror("fcntl set O_NONBLOCK");
-		return false;
-	}
+	if (!setNonBlocking(serverFd))
+        return false;
 
 	return true;
+}
+
+bool Server::setNonBlocking(int fd)
+{
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1)
+    {
+        logMessage(ERROR, "fcntl(F_GETFL) failed: " + std::string(strerror(errno)));
+        return false;
+    }
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1)
+    {
+        logMessage(ERROR, "fcntl(O_NONBLOCK) failed: " + std::string(strerror(errno)));
+        return false;
+    }
+    return true;
 }
 
 // bind & listen 設定
@@ -102,17 +104,15 @@ bool Server::bindAndListen()
 
 	if (bind(serverFd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
 	{
-		logMessage(ERROR, std::string("bind() failed: ") + strerror(errno));
-		perror("bind");
+		logMessage(ERROR, "bind() failed: " + std::string(strerror(errno)));
 		return false;
 	}
 
-	if (listen(serverFd, 5) < 0)
-	{
-		logMessage(ERROR, std::string("listen() failed: ") + strerror(errno));
-		perror("listen");
-		return false;
-	}
+	if (listen(serverFd, SOMAXCONN) < 0) // 5 → SOMAXCONN
+    {
+        logMessage(ERROR, "listen() failed: " + std::string(strerror(errno)));
+        return false;
+    }
 
 	return true;
 }
@@ -152,28 +152,15 @@ int Server::acceptClient()
 	int clientFd = accept(serverFd, NULL, NULL);
 	if (clientFd < 0)
 	{
-		logMessage(ERROR, std::string("accept() failed: ") + strerror(errno));
-		perror("accept");
+		logMessage(ERROR, "accept() failed: " + std::string(strerror(errno)));
 		return -1;
 	}
 
-	int flags = fcntl(clientFd, F_GETFL, 0);
-	if (flags == -1)
-	{
-		logMessage(ERROR,
-				   std::string("fcntl(F_GETFL client) failed: ") + strerror(errno));
-		perror("fcntl get client");
-		close(clientFd);
-		return -1;
-	}
-	if (fcntl(clientFd, F_SETFL, flags | O_NONBLOCK) == -1)
-	{
-		logMessage(ERROR, std::string("fcntl(O_NONBLOCK client) failed: ") +
-							  strerror(errno));
-		perror("fcntl set O_NONBLOCK client");
-		close(clientFd);
-		return -1;
-	}
+	if (!setNonBlocking(clientFd))
+    {
+        close(clientFd);
+        return -1;
+    }
 
 	return clientFd;
 }
@@ -208,71 +195,75 @@ void Server::handleClient(int index)
 	int fd = fds[index].fd;
 	int bytes = recv(fd, buffer, sizeof(buffer) - 1, 0);
 
-	if (bytes <= 0)
+	if (bytes == 0) // bytes < 0 は無視して poll に任せる
 	{
 		handleDisconnect(fd, index, bytes);
 		return;
 	}
-
-	buffer[bytes] = '\0';
-	clients[fd].recvBuffer.append(buffer);
-
-	// もしヘッダ解析済みなら max_body_size チェック
-	Request &req = clients[fd].currentRequest;
-	LocationMatch m = getLocationForUri(req.uri);
-	const ServerConfig::Location *loc = m.loc;
-
-	if (loc && clients[fd].receivedBodySize + bytes >
-				   static_cast<size_t>(loc->max_body_size))
+	else if (bytes > 0)
 	{
-		std::ostringstream res;
-		res << "HTTP/1.1 413 Payload Too Large\r\nContent-Length: "
-			<< clients[fd].receivedBodySize + bytes << "\r\n\r\n";
-		queueSend(fd, res.str());
-		// handleDisconnect(fd, index, bytes);
-		return;
-	}
 
-	// 累積ボディサイズを更新
-	clients[fd].receivedBodySize += req.body.size();
+		buffer[bytes] = '\0';
+		clients[fd].recvBuffer.append(buffer);
 
-	// 1リクエストずつ処理
-	while (true)
-	{
-		std::string requestStr =
-			extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
-		if (requestStr.empty())
-			break;
-
+		// もしヘッダ解析済みなら max_body_size チェック
 		Request &req = clients[fd].currentRequest;
 		LocationMatch m = getLocationForUri(req.uri);
 		const ServerConfig::Location *loc = m.loc;
-		const std::string &locPath = m.path;
 
-		// 1リクエスト分の body が max_body_size を超えていないかチェック
-		if (!checkMaxBodySize(fd, req.body.size(), loc))
+		if (loc && clients[fd].receivedBodySize + bytes >
+					static_cast<size_t>(loc->max_body_size))
 		{
-			// handleDisconnect(fd, index, 0);
-			break;
+			std::ostringstream res;
+			res << "HTTP/1.1 413 Payload Too Large\r\n"
+				<< "Content-Length: " << clients[fd].receivedBodySize + bytes << "\r\n"
+				<< "Connection: close\r\n\r\n"; // ← 追加
+			queueSend(fd, res.str());
+			// handleDisconnect(fd, index, bytes);
+			return;
 		}
 
-		printf("Request complete from fd=%d\n", fd);
+		// 累積ボディサイズを更新
+		clients[fd].receivedBodySize += req.body.size();
 
-		// メソッド許可チェック
-		if (!handleMethodCheck(fd, req, loc, requestStr.size()))
-			continue;
-
-		// CGI / POST / GET 処理
-		// --- リダイレクト処理 ---
-		if (handleRedirect(fd, loc))
+		// 1リクエストずつ処理
+		while (true)
 		{
-			// redirect を queueSend したらこのリクエスト処理は完了
-			// ループを抜けて次の recv まで待つ
-			break;
-		}
+			std::string requestStr =
+				extractNextRequest(clients[fd].recvBuffer, clients[fd].currentRequest);
+			if (requestStr.empty())
+				break;
 
-		// CGI / POST / GET 処理
-		processRequest(fd, req, loc, locPath, requestStr.size());
+			Request &req = clients[fd].currentRequest;
+			LocationMatch m = getLocationForUri(req.uri);
+			const ServerConfig::Location *loc = m.loc;
+			const std::string &locPath = m.path;
+
+			// 1リクエスト分の body が max_body_size を超えていないかチェック
+			if (!checkMaxBodySize(fd, req.body.size(), loc))
+			{
+				// handleDisconnect(fd, index, 0);
+				break;
+			}
+
+			printf("Request complete from fd=%d\n", fd);
+
+			// メソッド許可チェック
+			if (!handleMethodCheck(fd, req, loc, requestStr.size()))
+				continue;
+
+			// CGI / POST / GET 処理
+			// --- リダイレクト処理 ---
+			if (handleRedirect(fd, loc))
+			{
+				// redirect を queueSend したらこのリクエスト処理は完了
+				// ループを抜けて次の recv まで待つ
+				break;
+			}
+
+			// CGI / POST / GET 処理
+			processRequest(fd, req, loc, locPath, requestStr.size());
+		}
 	}
 }
 
@@ -290,8 +281,9 @@ bool Server::checkMaxBodySize(int fd, int bytes,
 	{
 
 		std::ostringstream res;
-		res << "HTTP/1.1 413 Payload Too Large\r\nContent-Length: " << bytes
-			<< "\r\n\r\n";
+		res << "HTTP/1.1 413 Payload Too Large\r\n"
+			<< "Content-Length: " << bytes << "\r\n"
+			<< "Connection: close\r\n\r\n"; // ← 追加
 		queueSend(fd, res.str());
 		clients[fd].recvBuffer.clear();
 		return false; // 超過
@@ -306,13 +298,17 @@ bool Server::handleMethodCheck(int fd, Request &req,
 	if (req.method != "GET" && req.method != "POST" && req.method != "DELETE" && req.method != "HEAD")
 	{
 		queueSend(fd,
-              "HTTP/1.1 501 Not Implemented\r\n");
+                  "HTTP/1.1 501 Not Implemented\r\n"
+                  "Content-Length: 0\r\n"
+                  "Connection: close\r\n\r\n");		
 		clients[fd].recvBuffer.erase(0, reqSize);
 		return false;
 	}
   if (!isMethodAllowed(req.method, loc)) {
     queueSend(fd,
-              "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n");
+                  "HTTP/1.1 405 Method Not Allowed\r\n"
+                  "Content-Length: 0\r\n"
+                  "Connection: close\r\n\r\n"); // ←追加
     clients[fd].recvBuffer.erase(0, reqSize);
     return false;
   }
@@ -339,28 +335,16 @@ void Server::processRequest(int fd, Request &req,
 	clients[fd].recvBuffer.erase(0, reqSize);
 }
 
-std::string generateUniqueFilename()
-{
-	// 現在時刻を取得
-	std::time_t t = std::time(NULL);
-	std::tm *now = std::localtime(&t);
+std::string generateUniqueFilename() {
+    static unsigned long counter = 0;
 
-	std::ostringstream oss;
+    // プロセスIDとカウンタで擬似一意化
+    int pid = getpid();
+    int randNum = std::rand() % 10000;
 
-	// 年月日_時分秒（ゼロ埋め）
-	oss.fill('0');
-	oss << (now->tm_year + 1900) << std::setw(2) << (now->tm_mon + 1)
-		<< std::setw(2) << now->tm_mday << "_" << std::setw(2) << now->tm_hour
-		<< std::setw(2) << now->tm_min << std::setw(2) << now->tm_sec;
-
-	// 乱数付与（0〜9999）
-	int randNum = std::rand() % 10000;
-	oss << "_" << randNum;
-
-	// ファイル拡張子
-	oss << ".txt";
-
-	return oss.str();
+    std::ostringstream oss;
+    oss << "file_" << pid << "_" << counter++ << "_" << randNum << ".txt";
+    return oss.str();
 }
 
 std::string buildHttpResponse(int statusCode, const std::string &body,
@@ -368,13 +352,17 @@ std::string buildHttpResponse(int statusCode, const std::string &body,
 {
 	std::stringstream ss;
 	ss << "HTTP/1.1 " << statusCode << " "
-	   << (statusCode == 201 ? "Created" : statusCode == 403 ? "Forbidden"
-									   : statusCode == 500	 ? "Internal Server Error"
-															 : "")
-	   << "\r\n";
-	ss << "Content-Length:" << body.size() << "\r\n";
-	ss << "Content-Type: " << contentType << "\r\n\r\n";
-	ss << body;
+       << (statusCode == 201 ? "Created"
+           : statusCode == 403 ? "Forbidden"
+           : statusCode == 500 ? "Internal Server Error"
+           : "")
+       << "\r\n";
+
+    ss << "Content-Length: " << body.size() << "\r\n";
+    ss << "Content-Type: " << contentType << "\r\n";
+    ss << "Connection: close\r\n"; // ← 追加
+    ss << "\r\n";                  // ヘッダーと本文の区切り
+    ss << body;
 	return ss.str();
 }
 
@@ -416,38 +404,30 @@ void Server::handlePost(int fd, Request &req, const ServerConfig::Location *loc)
 	}
 }
 
-void saveBodyToFile(const std::string &body, const std::string &uploadDir)
-{
-	// 現在時刻
-	std::time_t t = std::time(NULL);
-	std::tm tm = *std::localtime(&t);
+void saveBodyToFile(const std::string &body, const std::string &uploadDir) {
+    static unsigned long counter = 0;
+    int pid = getpid();
+    int randNum = std::rand() % 10000;
 
-	// ファイル名生成
-	std::ostringstream oss;
-	oss << uploadDir;
-	if (!uploadDir.empty() && uploadDir[uploadDir.size() - 1] != '/' && uploadDir[uploadDir.size() - 1] != '\\')
-		oss << '/';
+    std::ostringstream oss;
+    oss << uploadDir;
+    if (!uploadDir.empty() && uploadDir[uploadDir.size() - 1] != '/')
+        oss << '/';
 
-	char buf[32];
-	std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &tm);
-	oss << "POST_" << buf;
+    oss << "POST_" << pid << "_" << counter++ << "_" << randNum << ".txt";
 
-	static int counter = 0;
-	oss << "_" << counter++ << ".txt";
+    std::string filename = oss.str();
 
-	std::string filename = oss.str();
+    std::ofstream ofs(filename.c_str(), std::ios::binary);
+    if (!ofs.is_open()) {
+        std::cerr << "Failed to open file for writing: " << filename << std::endl;
+        return;
+    }
 
-	std::ofstream ofs(filename.c_str(), std::ios::binary);
-	if (!ofs.is_open())
-	{
-		std::cerr << "Failed to open file for writing: " << filename << std::endl;
-		return;
-	}
+    ofs.write(body.c_str(), body.size());
+    ofs.close();
 
-	ofs.write(body.c_str(), body.size());
-	ofs.close();
-
-	std::cout << "[INFO] Saved POST body to: " << filename << std::endl;
+    std::cout << "[INFO] Saved POST body to: " << filename << std::endl;
 }
 
 void Server::handleChunkedBody(int fd, Request &req, const ServerConfig::Location *loc)
@@ -493,51 +473,48 @@ std::string urlDecode(const std::string &str)
 
 // x-www-form-urlencoded を処理する関数
 void Server::handleUrlEncodedForm(int fd, Request &req,
-								  const ServerConfig::Location *loc)
+                                  const ServerConfig::Location *loc)
 {
-	std::map<std::string, std::string> formData;
-	std::stringstream ss(req.body);
-	std::string pair;
+    std::map<std::string, std::string> formData;
+    std::stringstream ss(req.body);
+    std::string pair;
 
-	// key=value に分解
-	while (std::getline(ss, pair, '&'))
-	{
-		size_t eqPos = pair.find('=');
-		if (eqPos != std::string::npos)
-		{
-			std::string key = urlDecode(pair.substr(0, eqPos));
-			std::string value = urlDecode(pair.substr(eqPos + 1));
-			formData[key] = value;
-		}
-	}
+    while (std::getline(ss, pair, '&')) {
+        size_t eqPos = pair.find('=');
+        if (eqPos != std::string::npos) {
+            std::string key = urlDecode(pair.substr(0, eqPos));
+            std::string value = urlDecode(pair.substr(eqPos + 1));
+            formData[key] = value;
+        }
+    }
 
-	// ファイル保存パスが設定されていれば保存
-	if (!loc->upload_path.empty())
-	{
-		std::ostringstream filenameStream;
-		filenameStream << loc->upload_path << "/form_" << time(NULL) << ".txt";
-		std::string filename = filenameStream.str();
+    if (!loc->upload_path.empty()) {
+        static unsigned long counter = 0;
+        int pid = getpid();
+        int randNum = std::rand() % 10000;
 
-		std::ofstream ofs(filename.c_str());
-		if (!ofs)
-		{
-			std::string res = buildHttpResponse(500, "Internal Server Error\n");
-			queueSend(fd, res);
-			return;
-		}
+        std::ostringstream filenameStream;
+        filenameStream << loc->upload_path
+                       << "/form_" << pid << "_" << counter++ << "_" << randNum
+                       << ".txt";
+        std::string filename = filenameStream.str();
 
-		for (std::map<std::string, std::string>::const_iterator it =
-				 formData.begin();
-			 it != formData.end(); ++it)
-		{
-			ofs << it->first << "=" << it->second << "\n";
-		}
-		ofs.close();
-	}
+        std::ofstream ofs(filename.c_str());
+        if (!ofs) {
+            std::string res = buildHttpResponse(500, "Internal Server Error\n");
+            queueSend(fd, res);
+            return;
+        }
 
-	std::string responseBody = "Form received successfully\n";
-	std::string res = buildHttpResponse(201, responseBody);
-	queueSend(fd, res);
+        for (std::map<std::string, std::string>::const_iterator it = formData.begin();
+             it != formData.end(); ++it) {
+            ofs << it->first << "=" << it->second << "\n";
+        }
+        ofs.close();
+    }
+
+    std::string res = buildHttpResponse(201, "Form received successfully\n");
+    queueSend(fd, res);
 }
 
 std::string extractBoundary(const std::string &contentType)
@@ -699,28 +676,31 @@ Server::LocationMatch Server::getLocationForUri(const std::string &uri) const
 
 bool Server::isCgiRequest(const Request &req)
 {
+    // C++98対応版: リスト初期化禁止なので手動で初期化
+    static const char *exts[] = {".php", ".py"};
+    static const size_t extCount = sizeof(exts) / sizeof(exts[0]);
 
-	// パーサー未実装 → loc に書き込まず、直接比較文字列を使用
-	const std::string cgiExt = ".php";
+    // クエリストリングを除去
+    std::string uri = req.uri;
+    size_t q = uri.find('?');
+    if (q != std::string::npos)
+        uri = uri.substr(0, q);
 
-	// 1. クエリストリングを落とす (/foo.php?x=1 -> /foo.php)
-	std::string uri = req.uri;
-	size_t q = uri.find('?');
-	if (q != std::string::npos)
-	{
-		uri = uri.substr(0, q);
-	}
+    // 拡張子取得
+    size_t dot = uri.find_last_of('.');
+    if (dot == std::string::npos)
+        return false;
 
-	// 2. 最後の '.' を探す
-	size_t dot = uri.find_last_of('.');
-	if (dot == std::string::npos)
-	{
-		// 拡張子が無い → CGIじゃない
-		return false;
-	}
+    std::string ext = uri.substr(dot);
 
-	std::string ext = uri.substr(dot); // ".php" とか
-	return (ext == cgiExt);			   // いまはPHPだけCGI扱い
+    // 対応拡張子と比較
+    for (size_t i = 0; i < extCount; ++i)
+    {
+        if (ext == exts[i])
+            return true;
+    }
+
+    return false;
 }
 
 // ----------------------------
@@ -811,38 +791,64 @@ void executeCgiChild(int inFd, int outFd, const std::string &cgiPath,
 	for (std::map<std::string, std::string>::const_iterator it = env.begin(); it != env.end(); ++it)
 		setenv(it->first.c_str(), it->second.c_str(), 1);
 
-	char *argv[] = {(char *)"php-cgi", NULL};
-	execve(cgiPath.c_str(), argv, environ);
+	// CGIスクリプトの実際のファイルパスを取得
+    std::string scriptPath;
+    std::map<std::string, std::string>::const_iterator it = env.find("SCRIPT_FILENAME");
+    if (it != env.end())
+        scriptPath = it->second;
+    else
+        scriptPath = "";
+
+    // Pythonや他のインタプリタ系は scriptPath を argv[1] に渡す必要がある
+    char *argv[3];
+    argv[0] = const_cast<char *>(cgiPath.c_str());
+    argv[1] = const_cast<char *>(scriptPath.c_str());
+    argv[2] = NULL;
+    // execveに動的なcgiPathを渡す
+    execve(argv[0], argv, environ);
 	exit(1);
 }
 
-// 親プロセス側でのパイプ送信と poll 登録
-void Server::registerCgiProcess(int clientFd, pid_t pid, int outFd,
-								const std::string &body, std::map<int, Server::CgiProcess> &cgiMap,
-								pollfd fds[], int &nfds)
+// 親プロセス側でのパイプ送信
+void Server::registerCgiProcess(int clientFd, pid_t pid,
+                                int inFd, int outFd, const std::string &body,
+                                std::map<int, CgiProcess> &cgiMap)
 {
-	// 非ブロッキング設定
-	fcntl(outFd, F_SETFL, O_NONBLOCK);
+    // 1. 非ブロッキング設定
+    fcntl(outFd, F_SETFL, O_NONBLOCK);
+    fcntl(inFd, F_SETFL, O_NONBLOCK);
 
-	// クライアント→CGI 入力送信
-	if (!body.empty())
-		write(outFd - 1, body.c_str(), body.size()); // inPipe[1] 想定
-	close(outFd - 1);
+    // 2. CGI プロセス情報作成
+    CgiProcess proc;
+    proc.clientFd = clientFd;
+    proc.pid = pid;
+    proc.inFd = inFd;
+    proc.outFd = outFd;
+    proc.inputBuffer = body;  // 受信済み body をバッファに保持
 
-	// poll 監視に追加
-	pollfd pfd;
-	pfd.fd = outFd;
-	pfd.events = POLLIN;
-	fds[nfds++] = pfd;
+    // 3. 非ブロッキングで可能な範囲だけ書き込み
+    ssize_t written = 0;
+    const char* data = proc.inputBuffer.c_str();
+    size_t len = proc.inputBuffer.size();
+    while (written < static_cast<ssize_t>(len))
+    {
+        ssize_t n = write(inFd, data + written, len - written);
+        if (n > 0)
+            written += n;
+        else
+            break; // 書けない場合は次回 poll で再送
+    }
+    if (written > 0)
+        proc.inputBuffer.erase(0, written);
 
-	// 管理マップに登録
-	Server::CgiProcess proc;
-	proc.clientFd = clientFd;
-	proc.pid = pid;
-	proc.outFd = outFd;
-	proc.elapsedLoops = 0;
-	proc.startTime = time(NULL);
-	cgiMap[outFd] = proc;
+    // 4. イベント初期化
+    proc.events = POLLIN;  // 出力監視は常に
+    if (!proc.inputBuffer.empty())
+        proc.events |= POLLOUT;  // 書き込み残があれば POLLOUT 追加
+
+    // 5. CGI 管理マップに登録
+    proc.remainingMs = 5000; // タイムアウト5秒
+    cgiMap[outFd] = proc;
 }
 
 void Server::startCgiProcess(int clientFd, const Request &req, const ServerConfig::Location &loc)
@@ -862,77 +868,242 @@ void Server::startCgiProcess(int clientFd, const Request &req, const ServerConfi
 	// 親プロセス
 	close(inPipe[0]);
 	close(outPipe[1]);
-	registerCgiProcess(clientFd, pid, outPipe[0], req.body, cgiMap, fds, nfds);
+	registerCgiProcess(clientFd, pid, inPipe[1], outPipe[0], req.body, cgiMap);
 }
 
 void Server::handleCgiOutput(int fd)
 {
-	char buf[4096];
-	ssize_t n = read(fd, buf, sizeof(buf));
+    char buf[4096];
+    ssize_t n = read(fd, buf, sizeof(buf));
 
-	if (n > 0)
-	{
+    if (n > 0)
+    {
+        // バッファ上限チェック（例: 1MB）
+        if (cgiMap[fd].buffer.size() + n > 1024 * 1024)
+        {
+            std::cerr << "CGI buffer overflow on fd=" << fd << std::endl;
+            handleCgiError(fd);
+            return;
+        }
 		cgiMap[fd].buffer.append(buf, n);
+    }
+    else if (n == 0)
+    {
+        // EOF → 正常終了
+        handleCgiClose(fd);
+    }
+    else  // n < 0
+    {
+        // 読み取りエラー
+        handleCgiError(fd);
+    }
+}
+
+void Server::handleCgiInput(int fd)
+{
+    // CGIエントリ取得
+    if (cgiMap.count(fd) == 0)
+        return;
+
+    CgiProcess *proc = getCgiProcess(fd);
+	if (!proc)
 		return;
-	}
 
-	if (n == 0)
-	{ // EOF
-		int clientFd = cgiMap[fd].clientFd;
-		// 関数を呼んでHTTPレスポンスを生成
-		std::string response = buildHttpResponseFromCgi(cgiMap[fd].buffer);
+    if (proc->inputBuffer.empty()) {
+        // 書き込むものがない → POLLOUT解除
+        proc->events &= ~POLLOUT;
+        if (proc->inFd > 0)
+            close(proc->inFd);
+        proc->inFd = -1;
+        return;
+    }
 
-		// クライアントへ送信キューに追加
-		queueSend(clientFd, response);
-		close(fd);
-		waitpid(cgiMap[fd].pid, NULL, 0);
-		cgiMap.erase(fd);
-	}
+    // 残りデータを書き込み
+    const char *data = proc->inputBuffer.c_str();
+    ssize_t len = proc->inputBuffer.size();
+    ssize_t written = write(proc->inFd, data, len);
+
+	if (written < 0) {
+        // --- 一時的な書き込み失敗 ---
+        // → poll の次回 POLLOUT で再試行
+        // ただし、パイプ切断など致命的な場合に備えて確認
+        perror("write to CGI inFd failed");
+        return;
+    }
+
+    if (written > 0) {
+        proc->inputBuffer.erase(0, written);
+    }
+
+    // すべて書けたら POLLOUT解除 + inFd クローズ
+    if (proc->inputBuffer.empty()) {
+        proc->events &= ~POLLOUT;
+        if (proc->inFd > 0){
+            close(proc->inFd);
+            proc->inFd = -1;
+        }
+    }
+}
+
+std::string Server::buildHttpErrorPage(int code, const std::string &message)
+{
+    std::ostringstream oss;
+    oss << "<html><head><title>" << code << " Error</title></head><body>";
+    oss << "<h1>" << code << " " << message << "</h1>";
+    oss << "<hr><p>Webserv CGI Engine</p></body></html>";
+    return oss.str();
+}
+
+void Server::handleCgiError(int fd)
+{
+    if (cgiMap.count(fd) == 0)
+        return;
+
+    int clientFd = cgiMap[fd].clientFd;
+    std::cerr << "[ERROR] CGI read failed on fd=" << fd << std::endl;
+
+    std::string body = buildHttpErrorPage(500, "Internal Server Error");
+    std::ostringstream oss;
+    oss << "HTTP/1.1 500 Internal Server Error\r\n";
+    oss << "Content-Type: text/html\r\n";
+    oss << "Content-Length: " << body.size() << "\r\n\r\n";
+	oss << "Connection: close\r\n\r\n"; // ← 追加
+    oss << body;
+
+    queueSend(clientFd, oss.str());
+    close(fd);
+    waitpid(cgiMap[fd].pid, NULL, 0);
+    cgiMap.erase(fd);
+}
+
+void Server::handleCgiClose(int fd)
+{
+    // --- 1️⃣ 登録確認 ---
+    if (cgiMap.count(fd) == 0)
+        return;
+
+    CgiProcess &proc = cgiMap[fd];
+    int clientFd = proc.clientFd;
+
+    // --- 2️⃣ 子プロセス終了確認 (非ブロッキング) ---
+    int status = 0;
+    pid_t result = waitpid(proc.pid, &status, WNOHANG);
+    if (result == 0) {
+        // まだ終了していない（再びpollで呼ばれる）
+        std::cout << "[DEBUG] CGI still running pid=" << proc.pid << std::endl;
+        return;
+    } else if (result < 0) {
+        perror("waitpid");
+    }
+
+    // --- 子プロセス異常終了チェック ---
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+    {
+        // 🚨 CGIが異常終了 → HTTP500を返す
+        std::string body = buildHttpErrorPage(500, "Internal Server Error");
+        std::ostringstream oss;
+		oss << "HTTP/1.1 500 Internal Server Error\r\n";
+		oss << "Content-Type: text/html\r\n";
+		oss << "Content-Length: " << body.size() << "\r\n";
+		oss << "Connection: close\r\n\r\n";  // ← 追加
+		oss << body;
+        queueSend(clientFd, oss.str());
+    }
+    else
+    {
+        // ✅ 正常終了 → 通常のレスポンス処理
+        std::string response = buildHttpResponseFromCgi(proc.buffer);
+        queueSend(clientFd, response);
+    }
+
+    // --- 4️⃣ パイプを確実に閉じる ---
+    if (proc.inFd > 0) {
+        close(proc.inFd);
+        proc.inFd = -1;
+    }
+    if (proc.outFd > 0) {
+        close(proc.outFd);
+        proc.outFd = -1;
+    }
+
+    // --- 5️⃣ poll監視解除（次ループで再構築される） ---
+    proc.events = 0;
+
+    // --- 6️⃣ CGIプロセス削除 ---
+    cgiMap.erase(fd);
+
+    std::cout << "[CGI] process pid=" << proc.pid << " cleaned up fd=" << fd << std::endl;
 }
 
 std::string Server::buildHttpResponseFromCgi(const std::string &cgiOutput)
 {
-	// CGIヘッダと本文を分離
-	size_t headerEnd = cgiOutput.find("\r\n\r\n");
-	std::string headers, content;
-	if (headerEnd != std::string::npos)
-	{
-		headers = cgiOutput.substr(0, headerEnd);
-		content = cgiOutput.substr(headerEnd + 4);
-	}
-	else
-	{
-		headers = cgiOutput;
-	}
+    std::string headers;
+    std::string content;
+    std::string statusLine = "HTTP/1.1 200 OK"; // デフォルト
 
-	// --- Statusヘッダを探す ---
-	std::string statusLine = "HTTP/1.1 200 OK"; // デフォルト
-	size_t statusPos = headers.find("Status:");
-	if (statusPos != std::string::npos)
-	{
-		size_t lineEnd = headers.find("\r\n", statusPos);
-		std::string statusValue =
-			headers.substr(statusPos + 7, lineEnd - (statusPos + 7));
-		// 前後の空白除去
-		size_t start = statusValue.find_first_not_of(" \t");
-		size_t end = statusValue.find_last_not_of(" \t");
-		if (start != std::string::npos && end != std::string::npos)
-			statusValue = statusValue.substr(start, end - start + 1);
-		statusLine = "HTTP/1.1 " + statusValue;
-		// "Status:" 行はHTTPレスポンスヘッダには不要なので削除
-		headers.erase(statusPos, lineEnd - statusPos + 2);
-	}
+    // --- 1️⃣ ヘッダと本文を分離 ---
+    size_t headerEnd = cgiOutput.find("\r\n\r\n");
+    if (headerEnd == std::string::npos)
+        headerEnd = cgiOutput.find("\n\n");
+    if (headerEnd != std::string::npos) {
+        headers = cgiOutput.substr(0, headerEnd);
+        content = cgiOutput.substr(headerEnd + (cgiOutput[headerEnd] == '\r' ? 4 : 2));
+    } else {
+        // ヘッダがない → 全部本文として扱う
+        content = cgiOutput;
+    }
 
-	// --- HTTPレスポンスを組み立て ---
-	std::ostringstream oss;
-	oss << statusLine << "\r\n";
-	oss << "Content-Length: " << content.size() << "\r\n";
-	if (!headers.empty())
-		oss << headers << "\r\n";
-	oss << "\r\n";
-	oss << content;
+    // --- 2️⃣ ヘッダ行を個別に処理 ---
+    std::istringstream headerStream(headers);
+    std::string line;
+    std::ostringstream filteredHeaders;
 
-	return oss.str();
+    bool hasContentType = false;
+
+    while (std::getline(headerStream, line)) {
+        // 行末の \r を削除
+        if (!line.empty() && line[line.size() - 1] == '\r')
+    		line.erase(line.size() - 1);
+
+        // 空行スキップ
+        if (line.empty()) continue;
+
+        // case-insensitive 検索のためにコピー
+        std::string lower = line;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+
+        // --- Status ヘッダ ---
+        if (lower.find("status:") == 0) {
+            std::string statusValue = line.substr(7);
+            size_t start = statusValue.find_first_not_of(" \t");
+            size_t end = statusValue.find_last_not_of(" \t");
+            if (start != std::string::npos && end != std::string::npos)
+                statusValue = statusValue.substr(start, end - start + 1);
+            statusLine = "HTTP/1.1 " + statusValue;
+            continue; // StatusヘッダはHTTPヘッダには入れない
+        }
+
+        // --- Content-Type ヘッダ確認 ---
+        if (lower.find("content-type:") == 0)
+            hasContentType = true;
+
+        // その他ヘッダはそのままコピー
+        filteredHeaders << line << "\r\n";
+    }
+
+    // --- 3️⃣ Content-Type補完 ---
+    if (!hasContentType)
+        filteredHeaders << "Content-Type: text/html\r\n";
+
+    // --- 4️⃣ HTTPレスポンス組み立て ---
+    std::ostringstream oss;
+    oss << statusLine << "\r\n";
+    oss << "Content-Length: " << content.size() << "\r\n";
+	oss << "Connection: close\r\n";  // ← ここで明示的に追加
+    oss << filteredHeaders.str();
+    oss << "\r\n" << content;
+
+    return oss.str();
 }
 
 // ----------------------------
@@ -942,25 +1113,36 @@ std::string Server::buildHttpResponseFromCgi(const std::string &cgiOutput)
 // クライアント送信バッファのデータ送信
 void Server::handleClientSend(int index)
 {
-	int fd = fds[index].fd;
-	std::map<int, ClientInfo>::iterator it = clients.find(fd);
-	if (it == clients.end())
-		return;
+    int fd = fds[index].fd;
+    std::map<int, ClientInfo>::iterator it = clients.find(fd);
+    if (it == clients.end())
+        return;
 
-	ClientInfo &client = it->second;
-	if (!client.sendBuffer.empty())
-	{
-		ssize_t n = write(fd, client.sendBuffer.data(), client.sendBuffer.size());
-		if (n > 0)
-		{
-			client.sendBuffer.erase(0, n);
-			if (client.sendBuffer.empty())
-			{
-				fds[index].events &= ~POLLOUT; // 送信完了 → POLLOUT 無効化
-				handleConnectionClose(fd);
-			}
+    ClientInfo &client = it->second;
+
+    // 送信バッファが空なら何もしない
+    while (!client.sendBuffer.empty())
+    {
+        // 1回あたりの送信サイズを制限（例: 4KB）
+        size_t sendSize = std::min(client.sendBuffer.size(), static_cast<size_t>(4096));
+
+        ssize_t n = write(fd, client.sendBuffer.data(), sendSize);
+
+        if (n > 0)
+        {
+            // 書き込み済み分をバッファから削除
+            client.sendBuffer.erase(0, n);
+        }
+        else
+        {
+            // n <= 0 の場合は無視して次の POLLOUT で再送
+            break;
+        }
+		// 送信完了かつ Connection: close の場合は接続を閉じる
+		if (client.sendBuffer.empty()) {
+			handleConnectionClose(fd);
 		}
-	}
+    }
 }
 
 // 送信キューにデータを追加する関数
@@ -971,16 +1153,6 @@ void Server::queueSend(int fd, const std::string &data)
 	{
 		// 送信バッファにデータを追加
 		it->second.sendBuffer += data;
-
-		// POLLOUT を有効化して poll に送信させる
-		for (int i = 1; i < nfds; i++)
-		{
-			if (fds[i].fd == fd)
-			{
-				fds[i].events |= POLLOUT | POLLIN;
-				break;
-			}
-		}
 	}
 }
 
@@ -991,40 +1163,23 @@ void Server::queueSend(int fd, const std::string &data)
 // クライアント接続クローズ処理
 void Server::handleConnectionClose(int fd)
 {
-	// 将来の keep-alive 対応予定
-	// if (client.keepAlive && !client.recvBuffer.empty()) {
-	//     client.state = READY_FOR_NEXT_REQUEST;
-	//     return;
-	// }
+    // clients から削除
+    std::map<int, ClientInfo>::iterator it = clients.find(fd);
+    if (it != clients.end())
+    {
+        std::cout << "[INFO] Closing connection fd=" << fd << std::endl;
 
-	std::cout << "[INFO] Closing connection: fd=" << fd << std::endl;
+        // ソケットを閉じる
+        close(fd);
 
-	// ソケットを閉じる
-	close(fd);
+        // 送受信バッファもクリア
+        it->second.sendBuffer.clear();
+        it->second.recvBuffer.clear();
 
-	// fds 配列から該当 fd を削除（最後の要素と入れ替えて nfds--）
-	int index = -1;
-	for (int i = 0; i < nfds; ++i)
-	{
-		if (fds[i].fd == fd)
-		{
-			index = i;
-			break;
-		}
-	}
-
-	if (index != -1)
-	{
-		fds[index] = fds[nfds - 1];
-		nfds--;
-	}
-
-	// clients から削除
-	std::map<int, ClientInfo>::iterator it = clients.find(fd);
-	if (it != clients.end())
-	{
-		clients.erase(it);
-	}
+        // クライアントマップから削除
+        clients.erase(it);
+    }
+    // pollfd 配列の更新は ServerManager が担当
 }
 
 // 接続切断処理（recv エラーや切断時の処理）
@@ -1073,7 +1228,8 @@ std::string Server::extractNextRequest(std::string &recvBuffer,
 		{
 			std::string res =
 				"HTTP/1.1 411 Length Required\r\n"
-				"Content-Length: 0\r\n\r\n";
+				"Content-Length: 0\r\n"
+				"Connection: close\r\n\r\n"; // ← 追加
 			queueSend(fd, res);
 		}
 
@@ -1111,25 +1267,64 @@ std::vector<int> Server::getClientFds() const
 
 void Server::onPollEvent(int fd, short revents)
 {
-	if (fd == serverFd && (revents & POLLIN))
-	{
-		handleNewConnection();
-		return;
-	}
+    // --------------------------
+    // 1. サーバーFD（新しい接続受付）
+    // --------------------------
+    if (fd == serverFd) {
+        if (revents & POLLIN)
+            handleNewConnection();           // 新しい接続受け入れ
+        if (revents & (POLLERR | POLLHUP))
+            handleServerError(fd);          // listen socketにエラー
+        return;
+    }
 
-	// 🔹 CGI出力ファイルディスクリプタなら
-	if (cgiMap.count(fd))
-	{
-		handleCgiOutput(fd);
-		return;
-	}
+    // --------------------------
+    // 2. CGI FD（出力 or 入力 監視）
+    // --------------------------
+    if (cgiMap.count(fd)) {
+        // --- CGI出力（子→親） ---
+        if (revents & POLLIN)
+            handleCgiOutput(fd);
 
-	// 🔹 通常クライアント
-	int idx = findIndexByFd(fd);
-	if (revents & POLLIN)
-		handleClient(idx);
-	if (revents & POLLOUT)
-		handleClientSend(idx);
+        // --- CGI入力（親→子） ---
+        if (revents & POLLOUT)
+            handleCgiInput(fd);
+
+        // --- 終了またはエラー ---
+        if (revents & (POLLHUP | POLLERR))
+            handleCgiClose(fd);
+
+        return;
+    }
+
+    // --------------------------
+    // 3. 通常クライアントFD
+    // --------------------------
+    if (clients.count(fd)) {
+		int idx = findIndexByFd(fd);
+        if (revents & POLLIN){
+            // 🔹 通常クライアント
+			if (revents & POLLIN)
+				handleClient(idx); 			// クライアントからのリクエスト受信
+		}
+        if (revents & POLLOUT)
+            handleClientSend(idx);           // クライアントへのレスポンス送信
+        if (revents & (POLLERR | POLLHUP))
+            handleConnectionClose(fd);      // エラーや切断時の後処理
+    }
+}
+
+// listenソケット（サーバーFD）でエラーが発生したときの処理
+void Server::handleServerError(int fd)
+{
+    std::cerr << "[ERROR] Server socket error on fd " << fd << std::endl;
+
+    // listenソケットは通常閉さない
+    // 必要に応じてログ出力や管理者通知などをここで行う
+    // 例: std::cerr << "Check network/bind settings\n";
+
+    // サーバーを停止する場合はここでclose(fd)するが、
+    // Webservでは通常そのまま運用
 }
 
 // fdからindexを見つける補助関数
@@ -1141,4 +1336,12 @@ int Server::findIndexByFd(int fd)
 			return i;
 	}
 	return -1;
+}
+
+CgiProcess* Server::getCgiProcess(int fd) {
+    std::map<int, CgiProcess>::iterator it = cgiMap.find(fd);
+    if (it == cgiMap.end()) {
+        throw std::runtime_error("getCgiProcess: fd not found in cgiMap");
+    }
+    return &(it->second); // ✅ オブジェクトのアドレスを返す
 }

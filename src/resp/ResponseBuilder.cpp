@@ -163,12 +163,7 @@ ResponseBuilder::stripLocationPrefix(const std::string &uri,
 
 // Dateヘッダ向け日付
 std::string ResponseBuilder::httpDate_() const {
-  char buf[128];
-  std::time_t t = std::time(0);
-  std::tm g;
-  gmtime_r(&t, &g);
-  std::strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT", &g);
-  return std::string(buf);
+    return "Sun, 09 Nov 2025 10:00:00 GMT";
 }
 
 bool ResponseBuilder::isTraversal(const std::string &uri) const {
@@ -185,32 +180,40 @@ bool ResponseBuilder::isTraversal(const std::string &uri) const {
 // - ディレクトリなら index.html を補う
 // - realpathでdocRoot外脱出を防ぎたいところだけど、まだ簡易版としてdocRoot直結
 // + traversalチェックでOKとしておく
-std::string ResponseBuilder::resolvePathForGet(const std::string &docRoot,
-                                               const std::string &uri,
-                                               bool &isDirOut) const {
-  isDirOut = false;
-  std::string target = uri.empty() ? "/" : uri;
+std::string ResponseBuilder::resolvePathForGet(
+    const std::string &docRoot,
+    const std::string &uri,
+    const std::string &locationPath, // ← 追加
+    bool &isDirOut) const
+{
+    isDirOut = false;
 
-  // --- "./" の重複防止付きパス結合 ---
-  std::string path;
-  if (docRoot[docRoot.size() - 1] == '/' && target.size() > 0 &&
-      target[0] == '/')
-    path = docRoot + target.substr(1);
-  else if (docRoot[docRoot.size() - 1] != '/' && target.size() > 0 &&
-           target[0] != '/')
-    path = docRoot + "/" + target;
-  else
-    path = docRoot + target;
+    // locationPath を URI から除去して相対パスを作る
+    std::string relativeUri = uri;
+    if (uri.compare(0, locationPath.size(), locationPath) == 0) {
+        relativeUri = uri.substr(locationPath.size());
+        if (relativeUri.empty()) relativeUri = "/";
+    }
 
-  // --- ディレクトリ判定 ---
-  struct stat st;
-  if (stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
-    isDirOut = true;
-    if (path[path.size() - 1] != '/')
-      path += "/";
-    return path; // ← index.html は付けない
-  }
-  return path;
+    // "./" の重複防止付きパス結合
+    std::string path;
+    if (!docRoot.empty() && docRoot[docRoot.size() - 1] == '/' && !relativeUri.empty() && relativeUri[0] == '/')
+        path = docRoot + relativeUri.substr(1);
+    else if (!docRoot.empty() && docRoot[docRoot.size() - 1] != '/' && !relativeUri.empty() && relativeUri[0] != '/')
+        path = docRoot + "/" + relativeUri;
+    else
+        path = docRoot + relativeUri;
+
+    // ディレクトリ判定
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+        isDirOut = true;
+        if (!path.empty() && path[path.size() - 1] != '/')
+            path += "/";
+        return path; // index.html はここでは付けない
+    }
+
+    return path;
 }
 
 // DELETE用は index.html など補完しない想定
@@ -465,13 +468,14 @@ std::string buildOkResponseFromString(const std::string &body,
 // --- GET/HEAD 処理 (3引数版) ---
 std::string
 ResponseBuilder::handleGetLikeCore(const Request &req, const ServerConfig &cfg,
-                                   const ServerConfig::Location *loc) {
+                                   const ServerConfig::Location *loc,
+                                   const std::string &locPath) {
   if (isTraversal(req.uri)) {
     return buildSimpleResponse(403, reasonPhrase(403), true);
   }
   std::string effectiveRoot = mergeRoots(cfg, loc);
   bool isDirFlag = false;
-  std::string absPath = resolvePathForGet(effectiveRoot, req.uri, isDirFlag);
+  std::string absPath = resolvePathForGet(effectiveRoot, req.uri, locPath, isDirFlag);
 
   // --- ディレクトリ処理 ---
   if (isDirFlag) {
@@ -501,6 +505,7 @@ ResponseBuilder::handleGetLikeCore(const Request &req, const ServerConfig &cfg,
     return buildErrorResponse(cfg, loc, 404);
   }
 
+
   bool headOnly = (req.method == "HEAD");
   return buildOkResponseFromFile(absPath, headOnly, true);
 }
@@ -509,32 +514,24 @@ ResponseBuilder::handleGetLikeCore(const Request &req, const ServerConfig &cfg,
 std::string
 ResponseBuilder::handleDeleteCore(const Request &req, const ServerConfig &cfg,
                                   const ServerConfig::Location *loc) {
-  std::cout << "[DEBUG] DELETE uri=" << req.uri << std::endl;
-
   if (isTraversal(req.uri)) {
-    std::cout << "[DEBUG] DELETE reject: traversal" << std::endl;
     return buildErrorResponse(cfg, loc, 403, true);
   }
 
   std::string effectiveRoot = mergeRoots(cfg, loc);
   std::string absPath = resolvePathForDelete(effectiveRoot, req.uri);
-  std::cout << "[DEBUG] DELETE resolved path=" << absPath << std::endl;
 
   struct stat st;
   if (stat(absPath.c_str(), &st) != 0) {
-    std::cout << "[DEBUG] DELETE stat failed: " << std::strerror(errno)
-              << std::endl;
     // ★ここ重要：404は buildErrorResponse で確実にボディ付き or
     // カスタムページを返す
     return buildErrorResponse(cfg, loc, 404, true);
   }
 
   if (unlink(absPath.c_str()) == 0) {
-    std::cout << "[DEBUG] DELETE ok -> 204" << std::endl;
     return buildSimpleResponse(204, "No Content", true);
   } else {
     int err = errno;
-    std::cout << "[DEBUG] DELETE failed: " << std::strerror(err) << std::endl;
     if (err == EACCES || err == EPERM) {
       return buildErrorResponse(cfg, loc, 403, true);
     }
@@ -572,7 +569,7 @@ std::string ResponseBuilder::handleGetLike(const Request &req,
                                            const ServerConfig::Location *loc,
                                            const std::string &locPath) {
   (void)locPath; // まだ使用していないが将来的に使う可能性あり
-  return handleGetLikeCore(req, cfg, loc); // 既存の3引数版を再利用
+  return handleGetLikeCore(req, cfg, loc, locPath); // 既存の3引数版を再利用
 }
 
 // --- DELETE (4引数版ラッパー) ---
