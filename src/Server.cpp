@@ -216,7 +216,7 @@ void Server::handleClient(int index)
 		{
 			std::ostringstream res;
 			res << "HTTP/1.1 413 Payload Too Large\r\n"
-				<< "Content-Length: " << clients[fd].receivedBodySize + bytes << "\r\n"
+				<< "Content-Length: 0" << "\r\n"
 				<< "Connection: close\r\n\r\n"; // ← 追加
 			queueSend(fd, res.str());
 			// handleDisconnect(fd, index, bytes);
@@ -282,7 +282,7 @@ bool Server::checkMaxBodySize(int fd, int bytes,
 
 		std::ostringstream res;
 		res << "HTTP/1.1 413 Payload Too Large\r\n"
-			<< "Content-Length: " << bytes << "\r\n"
+			<< "Content-Length: 0" << "\r\n"
 			<< "Connection: close\r\n\r\n"; // ← 追加
 		queueSend(fd, res.str());
 		clients[fd].recvBuffer.clear();
@@ -300,7 +300,7 @@ bool Server::handleMethodCheck(int fd, Request &req,
 		queueSend(fd,
                   "HTTP/1.1 501 Not Implemented\r\n"
                   "Content-Length: 0\r\n"
-                  "Connection: close\r\n\r\n");		
+                  "Connection: close\r\n\r\n");
 		clients[fd].recvBuffer.erase(0, reqSize);
 		return false;
 	}
