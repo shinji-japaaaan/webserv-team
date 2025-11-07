@@ -11,7 +11,6 @@
 #include <map>
 #include <string>
 #include <fcntl.h>
-#include <cerrno>
 #include <vector>
 
 #include "ClientInfo.hpp"
@@ -72,7 +71,10 @@ private:
 	// クライアント受信処理
 	// -----------------------------
 	void handleClient(int index);
-	std::string extractNextRequest(std::string &recvBuffer, Request &currentRequest);
+	std::string extractNextRequest(int clientFd, std::string &recvBuffer,
+									   Request &currentRequest);
+	void sendHttpError(int clientFd, int status, const std::string &msg,
+					   size_t parsedLength, std::string &recvBuffer);		
 	bool isMethodAllowed(const std::string &method,
 						 const ServerConfig::Location *loc);
 	bool checkMaxBodySize(int fd, int bytes, const ServerConfig::Location *loc);

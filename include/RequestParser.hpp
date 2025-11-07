@@ -16,6 +16,7 @@ struct Request {
 class RequestParser {
 private:
   size_t parsedLength;
+  bool isClearlyInvalidRequest(const std::string &buffer);
 
 public:
   RequestParser();
