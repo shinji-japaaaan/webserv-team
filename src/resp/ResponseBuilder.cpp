@@ -1,15 +1,12 @@
 #include "resp/ResponseBuilder.hpp"
 #include "resp/Mime.hpp"
 #include <cerrno>
-#include <cstring>
-#include <ctime>
 #include <dirent.h>
 #include <fstream>
-#include <limits.h> // PATH_MAX
 #include <map>
 #include <sstream>
 #include <sys/stat.h>
-#include <unistd.h> // unlink, access, etc
+#include <cstdio>     // std::remove
 
 // ====== 便利関数======
 static bool isMethodAllowed(const std::string &m,
@@ -456,7 +453,7 @@ std::string buildOkResponseFromString(const std::string &body,
   // ヘッダ
   response << "Content-Type: " << contentType << "\r\n";
   response << "Content-Length: " << body.size() << "\r\n";
-  response << "Connection: close\r\n"; // keep-alive未対応の場合
+  response << "Connection: close\r\n";
   response << "\r\n";                  // ヘッダ終端
 
   // ボディ
@@ -523,19 +520,27 @@ ResponseBuilder::handleDeleteCore(const Request &req, const ServerConfig &cfg,
 
   struct stat st;
   if (stat(absPath.c_str(), &st) != 0) {
-    // ★ここ重要：404は buildErrorResponse で確実にボディ付き or
-    // カスタムページを返す
+    // 物理ファイルが無い
     return buildErrorResponse(cfg, loc, 404, true);
   }
 
-  if (unlink(absPath.c_str()) == 0) {
+  // ディレクトリは削除対象外（誤ってrmdir相当の挙動をしないため）
+  if (S_ISDIR(st.st_mode)) {
+    return buildErrorResponse(cfg, loc, 403, true);
+  }
+
+  if (std::remove(absPath.c_str()) == 0) {
     return buildSimpleResponse(204, "No Content", true);
   } else {
-    int err = errno;
-    if (err == EACCES || err == EPERM) {
-      return buildErrorResponse(cfg, loc, 403, true);
+    switch (errno) {
+      case EACCES:
+      case EPERM:
+        return buildErrorResponse(cfg, loc, 403, true);
+      case ENOENT: // raceで消えていた等
+        return buildErrorResponse(cfg, loc, 404, true);
+      default:
+        return buildErrorResponse(cfg, loc, 500, true);
     }
-    return buildErrorResponse(cfg, loc, 500, true);
   }
 }
 
