@@ -11,7 +11,6 @@
 #include <map>
 #include <string>
 #include <fcntl.h>
-#include <cerrno>
 #include <vector>
 
 #include "ClientInfo.hpp"

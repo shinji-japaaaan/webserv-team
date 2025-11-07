@@ -56,14 +56,14 @@ bool Server::createSocket()
 	serverFd = socket(AF_INET, SOCK_STREAM, 0);
 	if (serverFd < 0)
 	{
-		logMessage(ERROR, "socket() failed: " + std::string(strerror(errno)));
+		logMessage(ERROR, "socket() failed");
 		return false;
 	}
 
 	int opt = 1;
 	if (setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
 	{
-		logMessage(ERROR, "setsockopt() failed: " + std::string(strerror(errno)));
+		logMessage(ERROR, "setsockopt() failed");
 		return false;
 	}
 	if (!setNonBlocking(serverFd))
@@ -77,12 +77,12 @@ bool Server::setNonBlocking(int fd)
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags == -1)
     {
-        logMessage(ERROR, "fcntl(F_GETFL) failed: " + std::string(strerror(errno)));
+        logMessage(ERROR, "fcntl(F_GETFL) failed");
         return false;
     }
     if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1)
     {
-        logMessage(ERROR, "fcntl(O_NONBLOCK) failed: " + std::string(strerror(errno)));
+        logMessage(ERROR, "fcntl(O_NONBLOCK) failed");
         return false;
     }
     return true;
@@ -104,13 +104,13 @@ bool Server::bindAndListen()
 
 	if (bind(serverFd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
 	{
-		logMessage(ERROR, "bind() failed: " + std::string(strerror(errno)));
+		logMessage(ERROR, "bind() failed");
 		return false;
 	}
 
 	if (listen(serverFd, SOMAXCONN) < 0) // 5 → SOMAXCONN
     {
-        logMessage(ERROR, "listen() failed: " + std::string(strerror(errno)));
+        logMessage(ERROR, "listen() failed");
         return false;
     }
 
@@ -152,7 +152,7 @@ int Server::acceptClient()
 	int clientFd = accept(serverFd, NULL, NULL);
 	if (clientFd < 0)
 	{
-		logMessage(ERROR, "accept() failed: " + std::string(strerror(errno)));
+		logMessage(ERROR, "accept() failed");
 		return -1;
 	}
 
@@ -1135,10 +1135,12 @@ void Server::handleClientSend(int index)
         }
         else
         {
-            // n <= 0 の場合は無視して次の POLLOUT で再送
-            break;
+            // n == 0 または n < 0 の場合は接続を閉じる
+            std::cerr << "[ERROR] write() failed or returned 0, closing fd=" << fd << std::endl;
+            handleConnectionClose(fd);
+            return; // ループ終了
         }
-		// 送信完了かつ Connection: close の場合は接続を閉じる
+		// 送信完了の場合は接続を閉じる
 		if (client.sendBuffer.empty()) {
 			handleConnectionClose(fd);
 		}
