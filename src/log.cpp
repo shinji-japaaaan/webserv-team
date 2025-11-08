@@ -3,15 +3,11 @@
 #include <fstream>
 #include <sstream>
 #include <ctime>
-#include <unistd.h>
+#include "UniqueName.hpp"
 
 // ★ タイムスタンプを取得
 std::string getTimeStamp() {
-    static unsigned long counter = 0;
-    int pid = getpid();  // 許可関数
-    std::ostringstream oss;
-    oss << "log_" << pid << "_" << counter++;
-    return oss.str();
+    return makeUniqueName("log", "");
 }
 
 // --- 通常ログ出力 ---
