@@ -1,10 +1,10 @@
 Summary
-  ❌ [01] Multiple ports — 8080 GET /  (expected 200, got 000)  [http://127.0.0.1:8080/]
-  ❌ [01] Multiple ports — 8081 GET /  (expected 200, got 000)  [http://127.0.0.1:8081/]
-  ❌ [02] Hostnames (port-based) — example.local GET /  (expected 200, got 000)  [http://example.local:8080/]
-  ❌ [02] Hostnames (port-based) — demo.local GET /  (expected 200, got 000)  [http://demo.local:8080/]
-  ❌ [03] Custom error pages — GET /notfound  (expected 404, got 000)  [http://127.0.0.1:8082/notfound]
-  ❌ [04] Body limit & upload — small POST form  (expected 200, got 000)  [http://127.0.0.1:8083/upload/]
+  ✅ [01] Multiple ports — 8080 GET /  (200)
+  ✅ [01] Multiple ports — 8081 GET /  (200)
+  ✅ [02] Hostnames (port-based) — example.local GET /  (200)
+  ✅ [02] Hostnames (port-based) — demo.local GET /  (200)
+  ✅ [03] Custom error pages — GET /notfound  (404)
+  ❌ [04] Body limit & upload — small POST form  (expected 200, got 500)  [http://127.0.0.1:8083/upload/]
   ✅ [04] Body limit & upload — big POST > limit  (413)
   ❌ [05] Routes & redirect — GET /docs/  (expected 200, got 000)  [http://127.0.0.1:8084/docs/]
   ❌ [05] Routes & redirect — redirect 301  (expected 301, got 000)  [http://127.0.0.1:8084/redirect/]

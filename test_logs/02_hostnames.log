@@ -1,0 +1,13 @@
+Server listening on port 8080
+Initialized server on 127.0.0.1:8080 (root=./docs/)
+Server listening on port 8081
+Initialized server on 127.0.0.1:8081 (root=./www/)
+New client connected: fd=5
+Request complete from fd=5
+[INFO] Closing connection fd=5
+New client connected: fd=5
+Request complete from fd=5
+[INFO] Closing connection fd=5
+New client connected: fd=5
+Request complete from fd=5
+[INFO] Closing connection fd=5

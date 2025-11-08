@@ -5,3 +5,13 @@ curl -i http://localhost:8080/cgi-bin/test.php
 sleep(10);
 echo "Hello World";
 ?>
+
+echo -e "BAD Request" | nc 127.0.0.1 8080
+リスポンス
+”HTTP/1.1 400 Bad Request
+Content-Length: 11
+Content-Type: text/plain
+Connection: close
+
+Bad Request”
+
