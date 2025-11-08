@@ -253,12 +253,9 @@ void Server::handleClient(int index)
 		if (loc && clients[fd].receivedBodySize + bytes >
 					static_cast<size_t>(loc->max_body_size))
 		{
-			std::ostringstream res;
-			res << "HTTP/1.1 413 Payload Too Large\r\n"
-				<< "Content-Length: 0" << "\r\n"
-				<< "Connection: close\r\n\r\n"; // ← 追加
-			queueSend(fd, res.str());
-			// handleDisconnect(fd, index, bytes);
+			ResponseBuilder res_build;
+			std::string res = res_build.buildErrorResponse(cfg, loc, 413, true);
+			queueSend(fd, res);
 			return;
 		}
 
@@ -279,7 +276,7 @@ void Server::handleClient(int index)
 			const std::string &locPath = m.path;
 
 			// 1リクエスト分の body が max_body_size を超えていないかチェック
-			if (!checkMaxBodySize(fd, req.body.size(), loc))
+			if (!checkMaxBodySize(fd, req.body.size(), cfg, loc))
 			{
 				// handleDisconnect(fd, index, 0);
 				break;
@@ -307,8 +304,7 @@ void Server::handleClient(int index)
 }
 
 // Server.cpp に実装
-bool Server::checkMaxBodySize(int fd, int bytes,
-							  const ServerConfig::Location *loc)
+bool Server::checkMaxBodySize(int fd, int bytes, const ServerConfig &cfg, const ServerConfig::Location *loc)
 {
 	if (!loc)
 		return true;
@@ -318,12 +314,9 @@ bool Server::checkMaxBodySize(int fd, int bytes,
 		(clients[fd].receivedBodySize >
 		 static_cast<size_t>(loc->max_body_size)))
 	{
-
-		std::ostringstream res;
-		res << "HTTP/1.1 413 Payload Too Large\r\n"
-			<< "Content-Length: 0" << "\r\n"
-			<< "Connection: close\r\n\r\n"; // ← 追加
-		queueSend(fd, res.str());
+		ResponseBuilder res_build;
+		std::string res = res_build.buildErrorResponse(cfg, loc, 413, true);
+		queueSend(fd, res);
 		clients[fd].recvBuffer.clear();
 		return false; // 超過
 	}
@@ -336,18 +329,16 @@ bool Server::handleMethodCheck(int fd, Request &req,
 	// 実装済みのMethodかチェック。PUTは未実装なので501で返す。
 	if (req.method != "GET" && req.method != "POST" && req.method != "DELETE" && req.method != "HEAD")
 	{
-		queueSend(fd,
-                  "HTTP/1.1 501 Not Implemented\r\n"
-                  "Content-Length: 0\r\n"
-                  "Connection: close\r\n\r\n");
+		ResponseBuilder res_build;
+		std::string res = res_build.buildErrorResponse(cfg, loc, 501, true);
+		queueSend(fd, res);
 		clients[fd].recvBuffer.erase(0, reqSize);
 		return false;
 	}
   if (!isMethodAllowed(req.method, loc)) {
-    queueSend(fd,
-                  "HTTP/1.1 405 Method Not Allowed\r\n"
-                  "Content-Length: 0\r\n"
-                  "Connection: close\r\n\r\n"); // ←追加
+    ResponseBuilder res_build;
+	std::string res = res_build.buildErrorResponse(cfg, loc, 405, true);
+	queueSend(fd, res);
     clients[fd].recvBuffer.erase(0, reqSize);
     return false;
   }
@@ -510,26 +501,28 @@ void Server::handleUrlEncodedForm(int fd, Request &req,
     std::stringstream ss(req.body);
     std::string pair;
 
+    // application/x-www-form-urlencoded のデコード
     while (std::getline(ss, pair, '&')) {
         size_t eqPos = pair.find('=');
         if (eqPos != std::string::npos) {
-            std::string key = urlDecode(pair.substr(0, eqPos));
+            std::string key   = urlDecode(pair.substr(0, eqPos));
             std::string value = urlDecode(pair.substr(eqPos + 1));
             formData[key] = value;
         }
     }
 
-    if (!loc->upload_path.empty()) {
-        // 1) ファイル名をユニークに生成（PID・rand不使用）
+    // upload_path が設定されている場合のみファイル保存
+    if (loc && !loc->upload_path.empty()) {
+        // ユニークなファイル名を生成（getpid/rand 不使用）
         const std::string base = makeUniqueName("form", "txt");
 
-        // 2) upload_path と連結（末尾スラッシュ有無を吸収）
+        // upload_path と結合（末尾スラッシュ補正）
         std::string outdir = loc->upload_path;
         if (!outdir.empty() && outdir[outdir.size() - 1] != '/')
             outdir += '/';
         const std::string filename = outdir + base;
 
-        // 3) 書き込み（失敗時は 500）
+        //書き込み
         std::ofstream ofs(filename.c_str(), std::ios::out | std::ios::trunc);
         if (!ofs.is_open()) {
             std::string res = buildHttpResponse(500, "Internal Server Error\n");
@@ -538,15 +531,20 @@ void Server::handleUrlEncodedForm(int fd, Request &req,
         }
 
         for (std::map<std::string, std::string>::const_iterator it = formData.begin();
-             it != formData.end(); ++it) {
+             it != formData.end(); ++it)
+        {
             ofs << it->first << "=" << it->second << "\n";
         }
+
+        // ✅ close() は if の中（ofs のスコープ内）に置く！
         ofs.close();
     }
 
+    // 4️⃣ 成功レスポンス送信
     std::string res = buildHttpResponse(201, "Form received successfully\n");
     queueSend(fd, res);
 }
+
 
 std::string extractBoundary(const std::string &contentType)
 {
@@ -1272,6 +1270,12 @@ std::string Server::extractNextRequest(int clientFd, std::string &recvBuffer,
 
     currentRequest = parser.parse(recvBuffer);
 
+	// --- Content-Length 超過チェック ---
+	if (isContentLengthExceeded(currentRequest, recvBuffer)) {
+		sendHttpError(clientFd, 400, "Bad Request", parser.getParsedLength(), recvBuffer);
+		return "";
+	}
+
     // --- 不正リクエストかどうかをチェック ---
     if (currentRequest.method.empty()) {
         sendHttpError(clientFd, 400, "Bad Request", parser.getParsedLength(), recvBuffer);
@@ -1291,6 +1295,23 @@ std::string Server::extractNextRequest(int clientFd, std::string &recvBuffer,
     std::string completeRequest = recvBuffer.substr(0, parser.getParsedLength());
     recvBuffer.erase(0, parser.getParsedLength());
     return completeRequest;
+}
+
+bool Server::isContentLengthExceeded(const Request &req,
+                                     const std::string &recvBuffer) {
+    std::map<std::string, std::string>::const_iterator it =
+        req.headers.find("content-length");
+    if (it == req.headers.end())
+        return false; // Content-Lengthがない
+
+    size_t declaredLength = std::strtoul(it->second.c_str(), NULL, 10);
+
+    size_t headerEnd = recvBuffer.find("\r\n\r\n");
+    if (headerEnd == std::string::npos)
+        return false;
+
+    size_t bodySize = recvBuffer.size() - (headerEnd + 4);
+    return bodySize > declaredLength;
 }
 
 // ヘルパー関数: HTTPエラー送信 + バッファ調整
