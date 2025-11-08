@@ -1229,11 +1229,11 @@ std::string Server::extractNextRequest(int clientFd, std::string &recvBuffer,
 
     currentRequest = parser.parse(recvBuffer);
 
-	// // --- Content-Length 超過チェック ---
-	// if (isContentLengthExceeded(currentRequest, recvBuffer)) {
-	// 	sendHttpError(clientFd, 400, "Bad Request", parser.getParsedLength(), recvBuffer);
-	// 	return "";
-	// }
+	// --- Content-Length 超過チェック ---
+	if (isContentLengthExceeded(currentRequest, recvBuffer)) {
+		sendHttpError(clientFd, 400, "Bad Request", parser.getParsedLength(), recvBuffer);
+		return "";
+	}
 
     // --- 不正リクエストかどうかをチェック ---
     if (currentRequest.method.empty()) {
