@@ -75,10 +75,10 @@ private:
 									   Request &currentRequest);
 	bool isContentLengthExceeded(const Request &req, const std::string &recvBuffer);
 	void sendHttpError(int clientFd, int status, const std::string &msg,
-					   size_t parsedLength, std::string &recvBuffer);		
+					   size_t parsedLength, std::string &recvBuffer);
 	bool isMethodAllowed(const std::string &method,
 						 const ServerConfig::Location *loc);
-	bool checkMaxBodySize(int fd, int bytes, const ServerConfig::Location *loc);
+	bool checkMaxBodySize(int fd, int bytes, const ServerConfig &cfg, const ServerConfig::Location *loc);
 	bool handleMethodCheck(int fd, Request &req, const ServerConfig::Location *loc, size_t reqSize);
 	void processRequest(int fd, Request &req, const ServerConfig::Location *loc,
 						const std::string &locPath, size_t reqSize);
@@ -99,8 +99,8 @@ private:
 	void startCgiProcess(int clientFd, const Request &req, const ServerConfig::Location &loc); // CGI実行関数
 	void handleCgiOutput(int outFd);
 	void handleCgiClose(int outFd);
-	void handleCgiError(int outFd);	
-	void handleCgiInput(int fd);										   
+	void handleCgiError(int outFd);
+	void handleCgiInput(int fd);
 	std::string buildHttpResponseFromCgi(const std::string &cgiOutput);
 	std::string buildHttpErrorPage(int code, const std::string &message);
 	void registerCgiProcess(int clientFd, pid_t pid,
