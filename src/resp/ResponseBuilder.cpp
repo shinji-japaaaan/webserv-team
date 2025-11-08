@@ -88,6 +88,8 @@ static std::string reasonPhrase(int code) {
     return "OK";
   case 204:
     return "No Content";
+  case 400:
+    return "Bad Request";
   case 403:
     return "Forbidden";
   case 404:
@@ -98,6 +100,8 @@ static std::string reasonPhrase(int code) {
     return "Payload Too Large";
   case 500:
     return "Internal Server Error";
+  case 501:
+    return "Not Implemented";
   }
   return "Unknown";
 }
@@ -358,7 +362,7 @@ ResponseBuilder::buildErrorResponse(const ServerConfig &cfg,
   else if (cfg.errorPages.count(statusCode)) {
     filePath = cfg.errorPages.at(statusCode);
   }
-  // ファイルがあれば返す
+  // ファイルpathの指定があれば返す
   if (!filePath.empty()) {
     std::ifstream ifs(filePath.c_str(), std::ios::binary);
     if (ifs.is_open()) {

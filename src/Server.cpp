@@ -214,12 +214,9 @@ void Server::handleClient(int index)
 		if (loc && clients[fd].receivedBodySize + bytes >
 					static_cast<size_t>(loc->max_body_size))
 		{
-			std::ostringstream res;
-			res << "HTTP/1.1 413 Payload Too Large\r\n"
-				<< "Content-Length: 0" << "\r\n"
-				<< "Connection: close\r\n\r\n"; // ← 追加
-			queueSend(fd, res.str());
-			// handleDisconnect(fd, index, bytes);
+			ResponseBuilder res_build;
+			std::string res = res_build.buildErrorResponse(cfg, loc, 413, true);
+			queueSend(fd, res);
 			return;
 		}
 
@@ -240,7 +237,7 @@ void Server::handleClient(int index)
 			const std::string &locPath = m.path;
 
 			// 1リクエスト分の body が max_body_size を超えていないかチェック
-			if (!checkMaxBodySize(fd, req.body.size(), loc))
+			if (!checkMaxBodySize(fd, req.body.size(), cfg, loc))
 			{
 				// handleDisconnect(fd, index, 0);
 				break;
@@ -268,8 +265,7 @@ void Server::handleClient(int index)
 }
 
 // Server.cpp に実装
-bool Server::checkMaxBodySize(int fd, int bytes,
-							  const ServerConfig::Location *loc)
+bool Server::checkMaxBodySize(int fd, int bytes, const ServerConfig &cfg, const ServerConfig::Location *loc)
 {
 	if (!loc)
 		return true;
@@ -279,12 +275,9 @@ bool Server::checkMaxBodySize(int fd, int bytes,
 		(clients[fd].receivedBodySize >
 		 static_cast<size_t>(loc->max_body_size)))
 	{
-
-		std::ostringstream res;
-		res << "HTTP/1.1 413 Payload Too Large\r\n"
-			<< "Content-Length: 0" << "\r\n"
-			<< "Connection: close\r\n\r\n"; // ← 追加
-		queueSend(fd, res.str());
+		ResponseBuilder res_build;
+		std::string res = res_build.buildErrorResponse(cfg, loc, 413, true);
+		queueSend(fd, res);
 		clients[fd].recvBuffer.clear();
 		return false; // 超過
 	}
@@ -297,18 +290,16 @@ bool Server::handleMethodCheck(int fd, Request &req,
 	// 実装済みのMethodかチェック。PUTは未実装なので501で返す。
 	if (req.method != "GET" && req.method != "POST" && req.method != "DELETE" && req.method != "HEAD")
 	{
-		queueSend(fd,
-                  "HTTP/1.1 501 Not Implemented\r\n"
-                  "Content-Length: 0\r\n"
-                  "Connection: close\r\n\r\n");
+		ResponseBuilder res_build;
+		std::string res = res_build.buildErrorResponse(cfg, loc, 501, true);
+		queueSend(fd, res);
 		clients[fd].recvBuffer.erase(0, reqSize);
 		return false;
 	}
   if (!isMethodAllowed(req.method, loc)) {
-    queueSend(fd,
-                  "HTTP/1.1 405 Method Not Allowed\r\n"
-                  "Content-Length: 0\r\n"
-                  "Connection: close\r\n\r\n"); // ←追加
+    ResponseBuilder res_build;
+	std::string res = res_build.buildErrorResponse(cfg, loc, 405, true);
+	queueSend(fd, res);
     clients[fd].recvBuffer.erase(0, reqSize);
     return false;
   }
