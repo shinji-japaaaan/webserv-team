@@ -21,12 +21,26 @@
 #ifdef TEST_MOCK_WRITE
 static ssize_t writeForHandleClientSend(int fd, const void* buf, size_t len) {
     (void)fd; (void)buf; (void)len;
-    return 0; // モック動作: write が常に0を返す
+    return -1; // モック動作: write が常に0を返す
 }
 #else
 static ssize_t writeForHandleClientSend(int fd, const void* buf, size_t len) {
     return write(fd, buf, len); // 本来の write
 }
+#endif
+
+// #define TEST_MOCK_WRITE2  // 通常ビルドではコメントアウト
+
+#ifdef TEST_MOCK_WRITE2
+static ssize_t writeForHandleClientSend2(int fd, const void* buf, size_t len) {
+    (void)fd; (void)buf; (void)len;
+    return -1; // モック動作: write が常に0を返す
+}
+#else
+static ssize_t writeForHandleClientSend2(int fd, const void* buf, size_t len) {
+    return write(fd, buf, len); // 本来の write
+}
+
 #endif
 
 
@@ -928,11 +942,29 @@ void Server::registerCgiProcess(int clientFd, pid_t pid,
     size_t len = proc.inputBuffer.size();
     while (written < static_cast<ssize_t>(len))
     {
-        ssize_t n = write(inFd, data + written, len - written);
+        ssize_t n = writeForHandleClientSend(inFd, data + written, len - written);
         if (n > 0)
             written += n;
-        else
-            break; // 書けない場合は次回 poll で再送
+        else if (n == 0)
+        {
+            // 書けなかったが致命的ではない → 次回 poll で再送
+            break;
+        }
+        else // n < 0
+        {
+            // write がエラー
+            perror("write to CGI inFd failed");
+
+            // 致命的エラーなら inFd を閉じて POLLOUT を外す
+            close(inFd);
+            proc.inFd = -1;
+            proc.events &= ~POLLOUT;
+
+            // バッファは残ったままにせず、エラー応答を返す場合も考慮
+            proc.inputBuffer.clear();
+            
+            break;
+        }
     }
     if (written > 0)
         proc.inputBuffer.erase(0, written);
@@ -1220,7 +1252,7 @@ void Server::handleClientSend(int index)
         return; // 送るデータがないなら何もしない
 
     size_t sendSize = std::min(client.sendBuffer.size(), static_cast<size_t>(4096));
-    ssize_t n = writeForHandleClientSend(fd, client.sendBuffer.data(), sendSize);
+    ssize_t n = writeForHandleClientSend2(fd, client.sendBuffer.data(), sendSize);
 
     if (n > 0)
     {
@@ -1446,8 +1478,9 @@ void Server::onPollEvent(int fd, short revents)
 			if (revents & POLLIN)
 				handleClient(idx); 			// クライアントからのリクエスト受信
 		}
-        if (revents & POLLOUT)
+        if (revents & POLLOUT){
             handleClientSend(idx);           // クライアントへのレスポンス送信
+        }
         if (revents & (POLLERR | POLLHUP))
             handleConnectionClose(fd);      // エラーや切断時の後処理
     }
