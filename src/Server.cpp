@@ -928,53 +928,41 @@ void Server::registerCgiProcess(int clientFd, pid_t pid,
     fcntl(outFd, F_SETFL, O_NONBLOCK);
     fcntl(inFd, F_SETFL, O_NONBLOCK);
 
-    // 2. CGI プロセス情報作成
+    // 2. CGIプロセス情報作成
     CgiProcess proc;
     proc.clientFd = clientFd;
     proc.pid = pid;
     proc.inFd = inFd;
     proc.outFd = outFd;
-    proc.inputBuffer = body;  // 受信済み body をバッファに保持
+    proc.inputBuffer = body;
 
-    // 3. 非ブロッキングで可能な範囲だけ書き込み
-    ssize_t written = 0;
-    const char* data = proc.inputBuffer.c_str();
-    size_t len = proc.inputBuffer.size();
-    while (written < static_cast<ssize_t>(len))
+    // 3. poll1回につき1回だけ書き込み
+    if (!proc.inputBuffer.empty() && proc.inFd >= 0)
     {
-        ssize_t n = writeForHandleClientSend(inFd, data + written, len - written);
-        if (n > 0)
-            written += n;
-        else if (n == 0)
-        {
-            // 書けなかったが致命的ではない → 次回 poll で再送
-            break;
-        }
-        else // n < 0
-        {
-            // write がエラー
-            perror("write to CGI inFd failed");
+        const char* data = proc.inputBuffer.c_str();
+        size_t len = proc.inputBuffer.size();
+        ssize_t n = writeForHandleClientSend(proc.inFd, data, len);
 
-            // 致命的エラーなら inFd を閉じて POLLOUT を外す
-            close(inFd);
+        if (n > 0)
+            proc.inputBuffer.erase(0, n);
+        else if (n < 0)
+        {
+            // writeが致命的エラー
+            perror("write to CGI inFd failed");
+            close(proc.inFd);
             proc.inFd = -1;
             proc.events &= ~POLLOUT;
-
-            // バッファは残ったままにせず、エラー応答を返す場合も考慮
-            proc.inputBuffer.clear();
-            
-            break;
+            proc.inputBuffer.clear(); // 必要ならエラー応答
         }
+        // n == 0 は書けなかっただけ → 次回pollで再送
     }
-    if (written > 0)
-        proc.inputBuffer.erase(0, written);
 
     // 4. イベント初期化
-    proc.events = POLLIN;  // 出力監視は常に
-    if (!proc.inputBuffer.empty())
-        proc.events |= POLLOUT;  // 書き込み残があれば POLLOUT 追加
+    proc.events = POLLIN; // CGI出力監視
+    if (!proc.inputBuffer.empty() && proc.inFd >= 0)
+        proc.events |= POLLOUT; // 書き込み残ありならPOLLOUT
 
-    // 5. CGI 管理マップに登録
+    // 5. CGI管理マップに登録
     proc.remainingMs = 5000; // タイムアウト5秒
     cgiMap[outFd] = proc;
 }
