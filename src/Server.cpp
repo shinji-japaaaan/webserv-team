@@ -9,7 +9,11 @@
 #include <sstream>
 #include <sys/wait.h>
 #include <utility>
+#include <netdb.h>
+#include <cstring>
+#include <vector>
 #include "CgiProcess.hpp"
+#include "UniqueName.hpp"
 
 // ----------------------------
 // コンストラクタ・デストラクタ
@@ -91,30 +95,65 @@ bool Server::setNonBlocking(int fd)
 // bind & listen 設定
 bool Server::bindAndListen()
 {
-	sockaddr_in addr;
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(port);
-	addr.sin_addr.s_addr = inet_addr(host.c_str());
+    // addrinfo のヒントを設定
+    struct addrinfo hints;
+    std::memset(&hints, 0, sizeof(hints));
+    hints.ai_family   = AF_INET;      // IPv4
+    hints.ai_socktype = SOCK_STREAM;  // TCP
+    hints.ai_flags    = AI_PASSIVE;   // hostが空なら INADDR_ANY 的に
 
-	if (addr.sin_addr.s_addr == INADDR_NONE)
-	{
-		// "0.0.0.0" の場合などは明示的に ANY に
-		addr.sin_addr.s_addr = INADDR_ANY;
-	}
+    // ポート番号を文字列に変換
+    std::ostringstream oss;
+    oss << port;
+    std::string portStr = oss.str();
 
-	if (bind(serverFd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
-	{
-		logMessage(ERROR, "bind() failed");
-		return false;
-	}
+    // host が空文字なら NULL を渡して 0.0.0.0 (ANY) 扱い
+    const char *node = host.empty() ? NULL : host.c_str();
 
-	if (listen(serverFd, SOMAXCONN) < 0) // 5 → SOMAXCONN
+    struct addrinfo *res = NULL;
+    int rc = getaddrinfo(node, portStr.c_str(), &hints, &res);
+    if (rc != 0)
     {
-        logMessage(ERROR, "listen() failed");
+        logMessage(ERROR,
+            std::string("getaddrinfo() failed: ") + gai_strerror(rc));
         return false;
     }
 
-	return true;
+    bool bound = false;
+
+    // 返ってきた候補を順に試す（通常1件だが念のため）
+    for (struct addrinfo *ai = res; ai != NULL && !bound; ai = ai->ai_next)
+    {
+        if (bind(serverFd, ai->ai_addr, ai->ai_addrlen) == 0)
+        {
+            bound = true;
+        }
+        else
+        {
+            const int e = errno; // 直後に退避
+            logMessage(ERROR,
+                "bind() failed on candidate: " + std::string(strerror(e)));
+        }
+    }
+
+    freeaddrinfo(res);
+
+    if (!bound)
+    {
+        logMessage(ERROR,
+            "bind() failed for " + host + ":" + portStr);
+        return false;
+    }
+
+    if (listen(serverFd, SOMAXCONN) < 0)
+    {
+        const int e = errno;
+        logMessage(ERROR,
+            "listen() failed: " + std::string(strerror(e)));
+        return false;
+    }
+
+    return true;
 }
 
 // ----------------------------
@@ -327,15 +366,7 @@ void Server::processRequest(int fd, Request &req,
 }
 
 std::string generateUniqueFilename() {
-    static unsigned long counter = 0;
-
-    // プロセスIDとカウンタで擬似一意化
-    int pid = getpid();
-    int randNum = std::rand() % 10000;
-
-    std::ostringstream oss;
-    oss << "file_" << pid << "_" << counter++ << "_" << randNum << ".txt";
-    return oss.str();
+    return makeUniqueName("file", "txt");
 }
 
 std::string buildHttpResponse(int statusCode, const std::string &body,
@@ -396,19 +427,19 @@ void Server::handlePost(int fd, Request &req, const ServerConfig::Location *loc)
 }
 
 void saveBodyToFile(const std::string &body, const std::string &uploadDir) {
-    static unsigned long counter = 0;
-    int pid = getpid();
-    int randNum = std::rand() % 10000;
+    // 1) ユニークなファイル名を作成（PID・rand・counter 不使用）
+    const std::string base = makeUniqueName("POST", "txt");
 
+    // 2) ディレクトリと結合（末尾スラッシュ補正）
     std::ostringstream oss;
     oss << uploadDir;
     if (!uploadDir.empty() && uploadDir[uploadDir.size() - 1] != '/')
         oss << '/';
+    oss << base;
 
-    oss << "POST_" << pid << "_" << counter++ << "_" << randNum << ".txt";
+    const std::string filename = oss.str();
 
-    std::string filename = oss.str();
-
+    // 3) 書き込み
     std::ofstream ofs(filename.c_str(), std::ios::binary);
     if (!ofs.is_open()) {
         std::cerr << "Failed to open file for writing: " << filename << std::endl;
@@ -466,52 +497,50 @@ std::string urlDecode(const std::string &str)
 void Server::handleUrlEncodedForm(int fd, Request &req,
                                   const ServerConfig::Location *loc)
 {
-    if (loc->upload_path.empty()) {
-        std::string res = buildHttpResponse(400, "No upload path configured\n");
-        queueSend(fd, res);
-        return;
+    std::map<std::string, std::string> formData;
+    std::stringstream ss(req.body);
+    std::string pair;
+
+    // application/x-www-form-urlencoded のデコード
+    while (std::getline(ss, pair, '&')) {
+        size_t eqPos = pair.find('=');
+        if (eqPos != std::string::npos) {
+            std::string key   = urlDecode(pair.substr(0, eqPos));
+            std::string value = urlDecode(pair.substr(eqPos + 1));
+            formData[key] = value;
+        }
     }
 
-    // ファイル名生成
-    static unsigned long counter = 0;
-    int pid = getpid();
-    int randNum = std::rand() % 10000;
+    // upload_path が設定されている場合のみファイル保存
+    if (loc && !loc->upload_path.empty()) {
+        // ユニークなファイル名を生成（getpid/rand 不使用）
+        const std::string base = makeUniqueName("form", "txt");
 
-    std::ostringstream filenameStream;
-    filenameStream << loc->upload_path
-                   << "/form_" << pid << "_" << counter++ << "_" << randNum
-                   << ".txt";
-    std::string filename = filenameStream.str();
+        // upload_path と結合（末尾スラッシュ補正）
+        std::string outdir = loc->upload_path;
+        if (!outdir.empty() && outdir[outdir.size() - 1] != '/')
+            outdir += '/';
+        const std::string filename = outdir + base;
 
-    std::ofstream ofs(filename.c_str());
-    if (!ofs) {
-        std::string res = buildHttpResponse(500, "Internal Server Error\n");
-        queueSend(fd, res);
-        return;
-    }
-
-    std::string &body = req.body;
-    size_t pos = 0;
-
-    while (pos < body.size()) {
-        size_t amp = body.find('&', pos);
-        if (amp == std::string::npos) amp = body.size();
-
-        size_t eq = body.find('=', pos);
-        if (eq != std::string::npos && eq < amp) {
-            std::string key = urlDecode(body.substr(pos, eq - pos));
-            std::string value = urlDecode(body.substr(eq + 1, amp - eq - 1));
-            ofs << key << "=" << value << "\n";
-        } else {
-            // key=value 形式でない場合はそのまま書き込む
-            ofs << body.substr(pos, amp - pos) << "\n";
+        //書き込み
+        std::ofstream ofs(filename.c_str(), std::ios::out | std::ios::trunc);
+        if (!ofs.is_open()) {
+            std::string res = buildHttpResponse(500, "Internal Server Error\n");
+            queueSend(fd, res);
+            return;
         }
 
-        pos = amp + 1;
+        for (std::map<std::string, std::string>::const_iterator it = formData.begin();
+             it != formData.end(); ++it)
+        {
+            ofs << it->first << "=" << it->second << "\n";
+        }
+
+        // ✅ close() は if の中（ofs のスコープ内）に置く！
+        ofs.close();
     }
 
-    ofs.close();
-
+    // 4️⃣ 成功レスポンス送信
     std::string res = buildHttpResponse(201, "Form received successfully\n");
     queueSend(fd, res);
 }
@@ -781,17 +810,34 @@ std::map<std::string, std::string> buildCgiEnv(const Request &req,
 
 // 子プロセス側の設定・exec
 void executeCgiChild(int inFd, int outFd, const std::string &cgiPath,
-					 const std::map<std::string, std::string> &env)
+                     const std::map<std::string, std::string> &env)
 {
-	dup2(inFd, STDIN_FILENO);
-	dup2(outFd, STDOUT_FILENO);
-	close(inFd);
-	close(outFd);
+    // 標準入出力をパイプに差し替え
+    dup2(inFd, STDIN_FILENO);
+    dup2(outFd, STDOUT_FILENO);
+    close(inFd);
+    close(outFd);
 
-	for (std::map<std::string, std::string>::const_iterator it = env.begin(); it != env.end(); ++it)
-		setenv(it->first.c_str(), it->second.c_str(), 1);
+    // 1) envマップから "KEY=VALUE" 形式の文字列を作る
+    std::vector<std::string> envStorage;
+    envStorage.reserve(env.size());
 
-	// CGIスクリプトの実際のファイルパスを取得
+    for (std::map<std::string, std::string>::const_iterator it = env.begin();
+         it != env.end(); ++it)
+    {
+        envStorage.push_back(it->first + "=" + it->second);
+    }
+
+    // 2) execve に渡す char* 配列を構築
+    std::vector<char*> envp;
+    envp.reserve(envStorage.size() + 1);
+    for (size_t i = 0; i < envStorage.size(); ++i)
+    {
+        envp.push_back(const_cast<char*>(envStorage[i].c_str()));
+    }
+    envp.push_back(NULL); // envp の終端
+
+    // CGIスクリプトの実際のファイルパスを取得
     std::string scriptPath;
     std::map<std::string, std::string>::const_iterator it = env.find("SCRIPT_FILENAME");
     if (it != env.end())
@@ -804,9 +850,13 @@ void executeCgiChild(int inFd, int outFd, const std::string &cgiPath,
     argv[0] = const_cast<char *>(cgiPath.c_str());
     argv[1] = const_cast<char *>(scriptPath.c_str());
     argv[2] = NULL;
-    // execveに動的なcgiPathを渡す
-    execve(argv[0], argv, environ);
-	exit(1);
+
+    // 3) envp を自前で渡して execve
+    execve(argv[0], argv, &envp[0]);
+
+    // ここに来るのは execve が失敗したときだけ
+    // （親プロセスの状態に影響させないため、exit(1)でもOKだが課題的にはここは一応残す）
+    exit(1);
 }
 
 // 親プロセス側でのパイプ送信
