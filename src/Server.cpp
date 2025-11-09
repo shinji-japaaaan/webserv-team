@@ -494,55 +494,85 @@ std::string urlDecode(const std::string &str)
 }
 
 // x-www-form-urlencoded を処理する関数
+bool urlDecode(const std::string &src, std::string &out)
+{
+    out.clear();
+    char hex[3] = {0};
+
+    for (size_t i = 0; i < src.size(); ++i)
+    {
+        if (src[i] == '+') {
+            out += ' ';
+        }
+        else if (src[i] == '%' && i + 2 < src.size()) {
+            hex[0] = src[i + 1];
+            hex[1] = src[i + 2];
+
+            // 16進数チェック
+            if (!isxdigit(hex[0]) || !isxdigit(hex[1]))
+                return false;
+
+            out += static_cast<char>(strtol(hex, NULL, 16));
+            i += 2;
+        }
+        else {
+            out += src[i];
+        }
+    }
+    return true;
+}
+
 void Server::handleUrlEncodedForm(int fd, Request &req,
                                   const ServerConfig::Location *loc)
 {
-    std::map<std::string, std::string> formData;
-    std::stringstream ss(req.body);
-    std::string pair;
-
-    // application/x-www-form-urlencoded のデコード
-    while (std::getline(ss, pair, '&')) {
-        size_t eqPos = pair.find('=');
-        if (eqPos != std::string::npos) {
-            std::string key   = urlDecode(pair.substr(0, eqPos));
-            std::string value = urlDecode(pair.substr(eqPos + 1));
-            formData[key] = value;
-        }
+    if (!loc || loc->upload_path.empty()) {
+        queueSend(fd, buildHttpResponse(400, "No upload path configured\n"));
+        return;
     }
 
-    // upload_path が設定されている場合のみファイル保存
-    if (loc && !loc->upload_path.empty()) {
-        // ユニークなファイル名を生成（getpid/rand 不使用）
-        const std::string base = makeUniqueName("form", "txt");
+    // ファイル名生成（getpid不要）
+    std::string filename = loc->upload_path;
+    if (filename[filename.size() - 1] != '/')
+        filename += '/';
+    filename += makeUniqueName("form", "txt");
 
-        // upload_path と結合（末尾スラッシュ補正）
-        std::string outdir = loc->upload_path;
-        if (!outdir.empty() && outdir[outdir.size() - 1] != '/')
-            outdir += '/';
-        const std::string filename = outdir + base;
-
-        //書き込み
-        std::ofstream ofs(filename.c_str(), std::ios::out | std::ios::trunc);
-        if (!ofs.is_open()) {
-            std::string res = buildHttpResponse(500, "Internal Server Error\n");
-            queueSend(fd, res);
-            return;
-        }
-
-        for (std::map<std::string, std::string>::const_iterator it = formData.begin();
-             it != formData.end(); ++it)
-        {
-            ofs << it->first << "=" << it->second << "\n";
-        }
-
-        // ✅ close() は if の中（ofs のスコープ内）に置く！
-        ofs.close();
+    std::ofstream ofs(filename.c_str(), std::ios::out | std::ios::trunc);
+    if (!ofs.is_open()) {
+        queueSend(fd, buildHttpResponse(500, "Internal Server Error\n"));
+        return;
     }
 
-    // 4️⃣ 成功レスポンス送信
-    std::string res = buildHttpResponse(201, "Form received successfully\n");
-    queueSend(fd, res);
+    std::string &body = req.body;
+    size_t pos = 0;
+    while (pos < body.size()) {
+        size_t amp = body.find('&', pos);
+        if (amp == std::string::npos)
+            amp = body.size();
+
+        size_t eq = body.find('=', pos);
+        if (eq != std::string::npos && eq < amp) {
+            std::string key, value;
+
+            // URL デコード（失敗なら400）
+            if (!urlDecode(body.substr(pos, eq - pos), key) ||
+                !urlDecode(body.substr(eq + 1, amp - eq - 1), value))
+            {
+                ofs.close();
+                std::remove(filename.c_str()); // 部分書き込みファイル削除
+                queueSend(fd, buildHttpResponse(400, "Bad Request\n"));
+                return;
+            }
+
+            ofs << key << "=" << value << "\n";
+        } else {
+            ofs << body.substr(pos, amp - pos) << "\n";
+        }
+
+        pos = amp + 1;
+    }
+
+    ofs.close();
+    queueSend(fd, buildHttpResponse(201, "Form received successfully\n"));
 }
 
 
