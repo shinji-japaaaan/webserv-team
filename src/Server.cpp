@@ -15,6 +15,36 @@
 #include "CgiProcess.hpp"
 #include "UniqueName.hpp"
 
+
+// #define TEST_MOCK_WRITE  // 通常ビルドではコメントアウト
+
+#ifdef TEST_MOCK_WRITE
+static ssize_t writeForHandleClientSend(int fd, const void* buf, size_t len) {
+    (void)fd; (void)buf; (void)len;
+    return -1; // モック動作: write が常に0を返す
+}
+#else
+static ssize_t writeForHandleClientSend(int fd, const void* buf, size_t len) {
+    return write(fd, buf, len); // 本来の write
+}
+#endif
+
+// #define TEST_MOCK_WRITE2  // 通常ビルドではコメントアウト
+
+#ifdef TEST_MOCK_WRITE2
+static ssize_t writeForHandleClientSend2(int fd, const void* buf, size_t len) {
+    (void)fd; (void)buf; (void)len;
+    return -1; // モック動作: write が常に0を返す
+}
+#else
+static ssize_t writeForHandleClientSend2(int fd, const void* buf, size_t len) {
+    return write(fd, buf, len); // 本来の write
+}
+
+#endif
+
+
+
 // ----------------------------
 // コンストラクタ・デストラクタ
 // ----------------------------
@@ -898,35 +928,41 @@ void Server::registerCgiProcess(int clientFd, pid_t pid,
     fcntl(outFd, F_SETFL, O_NONBLOCK);
     fcntl(inFd, F_SETFL, O_NONBLOCK);
 
-    // 2. CGI プロセス情報作成
+    // 2. CGIプロセス情報作成
     CgiProcess proc;
     proc.clientFd = clientFd;
     proc.pid = pid;
     proc.inFd = inFd;
     proc.outFd = outFd;
-    proc.inputBuffer = body;  // 受信済み body をバッファに保持
+    proc.inputBuffer = body;
 
-    // 3. 非ブロッキングで可能な範囲だけ書き込み
-    ssize_t written = 0;
-    const char* data = proc.inputBuffer.c_str();
-    size_t len = proc.inputBuffer.size();
-    while (written < static_cast<ssize_t>(len))
+    // 3. poll1回につき1回だけ書き込み
+    if (!proc.inputBuffer.empty() && proc.inFd >= 0)
     {
-        ssize_t n = write(inFd, data + written, len - written);
+        const char* data = proc.inputBuffer.c_str();
+        size_t len = proc.inputBuffer.size();
+        ssize_t n = writeForHandleClientSend(proc.inFd, data, len);
+
         if (n > 0)
-            written += n;
-        else
-            break; // 書けない場合は次回 poll で再送
+            proc.inputBuffer.erase(0, n);
+        else if (n < 0)
+        {
+            // writeが致命的エラー
+            perror("write to CGI inFd failed");
+            close(proc.inFd);
+            proc.inFd = -1;
+            proc.events &= ~POLLOUT;
+            proc.inputBuffer.clear(); // 必要ならエラー応答
+        }
+        // n == 0 は書けなかっただけ → 次回pollで再送
     }
-    if (written > 0)
-        proc.inputBuffer.erase(0, written);
 
     // 4. イベント初期化
-    proc.events = POLLIN;  // 出力監視は常に
-    if (!proc.inputBuffer.empty())
-        proc.events |= POLLOUT;  // 書き込み残があれば POLLOUT 追加
+    proc.events = POLLIN; // CGI出力監視
+    if (!proc.inputBuffer.empty() && proc.inFd >= 0)
+        proc.events |= POLLOUT; // 書き込み残ありならPOLLOUT
 
-    // 5. CGI 管理マップに登録
+    // 5. CGI管理マップに登録
     proc.remainingMs = 5000; // タイムアウト5秒
     cgiMap[outFd] = proc;
 }
@@ -1200,32 +1236,36 @@ void Server::handleClientSend(int index)
 
     ClientInfo &client = it->second;
 
-    // 送信バッファが空なら何もしない
-    while (!client.sendBuffer.empty())
+    if (client.sendBuffer.empty())
+        return; // 送るデータがないなら何もしない
+
+    size_t sendSize = std::min(client.sendBuffer.size(), static_cast<size_t>(4096));
+    ssize_t n = writeForHandleClientSend2(fd, client.sendBuffer.data(), sendSize);
+
+    if (n > 0)
     {
-        // 1回あたりの送信サイズを制限（例: 4KB）
-        size_t sendSize = std::min(client.sendBuffer.size(), static_cast<size_t>(4096));
-
-        ssize_t n = write(fd, client.sendBuffer.data(), sendSize);
-
-        if (n > 0)
-        {
-            // 書き込み済み分をバッファから削除
-            client.sendBuffer.erase(0, n);
-        }
-        else
-        {
-            // n == 0 または n < 0 の場合は接続を閉じる
-            std::cerr << "[ERROR] write() failed or returned 0, closing fd=" << fd << std::endl;
-            handleConnectionClose(fd);
-            return; // ループ終了
-        }
-		// 送信完了の場合は接続を閉じる
-		if (client.sendBuffer.empty()) {
-			handleConnectionClose(fd);
-		}
+        client.sendBuffer.erase(0, n);
     }
+    else if (n == 0)
+    {
+        // ソケットが閉じられた
+        std::cerr << "[INFO] write() returned 0, closing fd=" << fd << std::endl;
+        handleConnectionClose(fd);
+        return;
+    }
+    else
+    {
+        // n < 0: エラー発生
+        std::cerr << "[ERROR] write() failed, closing fd=" << fd << std::endl;
+        handleConnectionClose(fd);
+        return;
+    }
+
+    // 🔹バッファが空になったら、この時点で送信完了
+    if (client.sendBuffer.empty())
+        handleConnectionClose(fd);
 }
+
 
 // 送信キューにデータを追加する関数
 void Server::queueSend(int fd, const std::string &data)
@@ -1426,8 +1466,9 @@ void Server::onPollEvent(int fd, short revents)
 			if (revents & POLLIN)
 				handleClient(idx); 			// クライアントからのリクエスト受信
 		}
-        if (revents & POLLOUT)
+        if (revents & POLLOUT){
             handleClientSend(idx);           // クライアントへのレスポンス送信
+        }
         if (revents & (POLLERR | POLLHUP))
             handleConnectionClose(fd);      // エラーや切断時の後処理
     }

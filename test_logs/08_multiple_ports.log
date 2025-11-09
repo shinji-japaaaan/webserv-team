@@ -8,6 +8,3 @@ Request complete from fd=5
 New client connected: fd=5
 Request complete from fd=5
 [INFO] Closing connection fd=5
-New client connected: fd=5
-Request complete from fd=5
-[INFO] Closing connection fd=5

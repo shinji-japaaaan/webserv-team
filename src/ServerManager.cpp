@@ -104,13 +104,19 @@ void Server::checkCgiTimeouts(int elapsedMs) {
 }
 
 void Server::sendGatewayTimeout(int clientFd) {
-    std::string response =
-        "HTTP/1.1 504 Gateway Timeout\r\n"
-        "Content-Length: 60\r\n"
-        "Content-Type: text/html\r\n\r\n"
-        "Connection: close\r\n\r\n" // ← 追加
-        "<html><body><h1>504 Gateway Timeout</h1>"
-        "<p>The CGI script did not respond in time.</p></body></html>";
+    // 504 レスポンスの本文を作成
+    std::string body = "<html><body><h1>504 Gateway Timeout</h1>"
+                       "<p>The CGI script did not respond in time.</p></body></html>";
+
+    // Content-Length を本文のサイズに合わせる
+    std::stringstream ss;
+    ss << "HTTP/1.1 504 Gateway Timeout\r\n"
+       << "Content-Length: " << body.size() << "\r\n"
+       << "Content-Type: text/html\r\n"
+       << "Connection: close\r\n\r\n"
+       << body;
+
+    std::string response = ss.str();
 
     // クライアント情報が存在しない場合は作成
     std::map<int, ClientInfo>::iterator it = clients.find(clientFd);
