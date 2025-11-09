@@ -15,6 +15,22 @@
 #include "CgiProcess.hpp"
 #include "UniqueName.hpp"
 
+
+// #define TEST_MOCK_WRITE  // 通常ビルドではコメントアウト
+
+#ifdef TEST_MOCK_WRITE
+static ssize_t writeForHandleClientSend(int fd, const void* buf, size_t len) {
+    (void)fd; (void)buf; (void)len;
+    return 0; // モック動作: write が常に0を返す
+}
+#else
+static ssize_t writeForHandleClientSend(int fd, const void* buf, size_t len) {
+    return write(fd, buf, len); // 本来の write
+}
+#endif
+
+
+
 // ----------------------------
 // コンストラクタ・デストラクタ
 // ----------------------------
@@ -1200,32 +1216,36 @@ void Server::handleClientSend(int index)
 
     ClientInfo &client = it->second;
 
-    // 送信バッファが空なら何もしない
-    while (!client.sendBuffer.empty())
+    if (client.sendBuffer.empty())
+        return; // 送るデータがないなら何もしない
+
+    size_t sendSize = std::min(client.sendBuffer.size(), static_cast<size_t>(4096));
+    ssize_t n = writeForHandleClientSend(fd, client.sendBuffer.data(), sendSize);
+
+    if (n > 0)
     {
-        // 1回あたりの送信サイズを制限（例: 4KB）
-        size_t sendSize = std::min(client.sendBuffer.size(), static_cast<size_t>(4096));
-
-        ssize_t n = write(fd, client.sendBuffer.data(), sendSize);
-
-        if (n > 0)
-        {
-            // 書き込み済み分をバッファから削除
-            client.sendBuffer.erase(0, n);
-        }
-        else
-        {
-            // n == 0 または n < 0 の場合は接続を閉じる
-            std::cerr << "[ERROR] write() failed or returned 0, closing fd=" << fd << std::endl;
-            handleConnectionClose(fd);
-            return; // ループ終了
-        }
-		// 送信完了の場合は接続を閉じる
-		if (client.sendBuffer.empty()) {
-			handleConnectionClose(fd);
-		}
+        client.sendBuffer.erase(0, n);
     }
+    else if (n == 0)
+    {
+        // ソケットが閉じられた
+        std::cerr << "[INFO] write() returned 0, closing fd=" << fd << std::endl;
+        handleConnectionClose(fd);
+        return;
+    }
+    else
+    {
+        // n < 0: エラー発生
+        std::cerr << "[ERROR] write() failed, closing fd=" << fd << std::endl;
+        handleConnectionClose(fd);
+        return;
+    }
+
+    // 🔹バッファが空になったら、この時点で送信完了
+    if (client.sendBuffer.empty())
+        handleConnectionClose(fd);
 }
+
 
 // 送信キューにデータを追加する関数
 void Server::queueSend(int fd, const std::string &data)
