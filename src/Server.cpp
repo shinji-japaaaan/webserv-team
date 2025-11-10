@@ -14,17 +14,18 @@
 #include <vector>
 #include "CgiProcess.hpp"
 #include "UniqueName.hpp"
+#include "ServerManager.hpp" 
 
 
 // #define TEST_MOCK_WRITE  // 通常ビルドではコメントアウト
 
 #ifdef TEST_MOCK_WRITE
-static ssize_t writeForHandleClientSend(int fd, const void* buf, size_t len) {
+static ssize_t writeForhandleCgiInput(int fd, const void* buf, size_t len) {
     (void)fd; (void)buf; (void)len;
     return -1; // モック動作: write が常に0を返す
 }
 #else
-static ssize_t writeForHandleClientSend(int fd, const void* buf, size_t len) {
+static ssize_t writeForhandleCgiInput(int fd, const void* buf, size_t len) {
     return write(fd, buf, len); // 本来の write
 }
 #endif
@@ -935,35 +936,9 @@ void Server::registerCgiProcess(int clientFd, pid_t pid,
     proc.inFd = inFd;
     proc.outFd = outFd;
     proc.inputBuffer = body;
+    proc.remainingMs = 5000; // タイムアウト
 
-    // 3. poll1回につき1回だけ書き込み
-    if (!proc.inputBuffer.empty() && proc.inFd >= 0)
-    {
-        const char* data = proc.inputBuffer.c_str();
-        size_t len = proc.inputBuffer.size();
-        ssize_t n = writeForHandleClientSend(proc.inFd, data, len);
-
-        if (n > 0)
-            proc.inputBuffer.erase(0, n);
-        else if (n < 0)
-        {
-            // writeが致命的エラー
-            perror("write to CGI inFd failed");
-            close(proc.inFd);
-            proc.inFd = -1;
-            proc.events &= ~POLLOUT;
-            proc.inputBuffer.clear(); // 必要ならエラー応答
-        }
-        // n == 0 は書けなかっただけ → 次回pollで再送
-    }
-
-    // 4. イベント初期化
-    proc.events = POLLIN; // CGI出力監視
-    if (!proc.inputBuffer.empty() && proc.inFd >= 0)
-        proc.events |= POLLOUT; // 書き込み残ありならPOLLOUT
-
-    // 5. CGI管理マップに登録
-    proc.remainingMs = 5000; // タイムアウト5秒
+    // 3. 管理マップにはoutFdキーで保存
     cgiMap[outFd] = proc;
 }
 
@@ -1017,48 +992,63 @@ void Server::handleCgiOutput(int fd)
 
 void Server::handleCgiInput(int fd)
 {
-    // CGIエントリ取得
-    if (cgiMap.count(fd) == 0)
+    // fd は CGI の inFd
+    CgiProcess* proc = getCgiProcessByInFd(fd);
+    if (!proc)
         return;
 
-    CgiProcess *proc = getCgiProcess(fd);
-	if (!proc)
-		return;
-
     if (proc->inputBuffer.empty()) {
-        // 書き込むものがない → POLLOUT解除
+        // 書くものがない → POLLOUT解除 + inFdクローズ
         proc->events &= ~POLLOUT;
-        if (proc->inFd > 0)
+        if (proc->inFd > 0) {
             close(proc->inFd);
-        proc->inFd = -1;
+            proc->inFd = -1;
+        }
         return;
     }
 
-    // 残りデータを書き込み
-    const char *data = proc->inputBuffer.c_str();
+    const char* data = proc->inputBuffer.c_str();
     ssize_t len = proc->inputBuffer.size();
-    ssize_t written = write(proc->inFd, data, len);
+    ssize_t written = writeForhandleCgiInput(fd, data, len);
 
-	if (written < 0) {
-        // --- 一時的な書き込み失敗 ---
-        // → poll の次回 POLLOUT で再試行
-        // ただし、パイプ切断など致命的な場合に備えて確認
-        perror("write to CGI inFd failed");
+    if (written < 0) {
+        // 致命的エラーとして終了
+        perror("write to CGI stdin failed");
+        proc->events &= ~POLLOUT;
+        if (proc->inFd > 0) {
+            close(proc->inFd);
+            proc->inFd = -1;
+        }
+        proc->inputBuffer.clear(); // 念のためバッファクリア
         return;
     }
 
-    if (written > 0) {
-        proc->inputBuffer.erase(0, written);
+    if (written == 0) {
+        // 一時的に書けなかった → 次の poll で再試行
+        return;
     }
 
-    // すべて書けたら POLLOUT解除 + inFd クローズ
+    // 書けた分を消去
+    proc->inputBuffer.erase(0, written);
+
     if (proc->inputBuffer.empty()) {
         proc->events &= ~POLLOUT;
-        if (proc->inFd > 0){
+        if (proc->inFd > 0) {
             close(proc->inFd);
             proc->inFd = -1;
         }
     }
+}
+
+CgiProcess* Server::getCgiProcessByInFd(int inFd)
+{
+    for (std::map<int, CgiProcess>::iterator it = cgiMap.begin();
+         it != cgiMap.end(); ++it)
+    {
+        if (it->second.inFd == inFd)
+            return &it->second;
+    }
+    return NULL;
 }
 
 std::string Server::buildHttpErrorPage(int code, const std::string &message)
@@ -1440,19 +1430,14 @@ void Server::onPollEvent(int fd, short revents)
     // --------------------------
     // 2. CGI FD（出力 or 入力 監視）
     // --------------------------
-    if (cgiMap.count(fd)) {
-        // --- CGI出力（子→親） ---
+    CgiProcess* proc = getCgiProcessByFd(fd); // inFd / outFd 両方に対応
+    if (proc) {
         if (revents & POLLIN)
-            handleCgiOutput(fd);
-
-        // --- CGI入力（親→子） ---
+            handleCgiOutput(proc->outFd);
         if (revents & POLLOUT)
-            handleCgiInput(fd);
-
-        // --- 終了またはエラー ---
+            handleCgiInput(proc->inFd);
         if (revents & (POLLHUP | POLLERR))
-            handleCgiClose(fd);
-
+            handleCgiClose(proc->outFd);
         return;
     }
 
@@ -1473,6 +1458,23 @@ void Server::onPollEvent(int fd, short revents)
             handleConnectionClose(fd);      // エラーや切断時の後処理
     }
 }
+
+CgiProcess* Server::getCgiProcessByFd(int fd)
+{
+    std::map<int, CgiProcess>::iterator it;
+
+    // cgiMap は outFd をキーにしている前提
+    for (it = cgiMap.begin(); it != cgiMap.end(); ++it)
+    {
+        if (it->second.outFd == fd || it->second.inFd == fd)
+        {
+            return &(it->second);
+        }
+    }
+
+    return NULL; // 見つからなかった
+}
+
 
 // listenソケット（サーバーFD）でエラーが発生したときの処理
 void Server::handleServerError(int fd)
