@@ -139,7 +139,7 @@ void Server::sendGatewayTimeout(int clientFd) {
 // ----------------------------
 // poll対象FDの作成
 // ----------------------------
-    std::vector<PollEntry> ServerManager::buildPollEntries() {
+std::vector<PollEntry> ServerManager::buildPollEntries() {
     std::vector<PollEntry> pollEntries;
 
     for (size_t i = 0; i < servers.size(); ++i) {
@@ -171,18 +171,32 @@ void Server::sendGatewayTimeout(int clientFd) {
         // --- CGI FDs ---
         std::vector<int> cgiFds = srv->getCgiFds();
         for (size_t j = 0; j < cgiFds.size(); ++j) {
-            int fd = cgiFds[j];
-            CgiProcess *proc = srv->getCgiProcess(fd); // CGI状態を取得
-            if (!proc) // 存在しない場合スキップ
+            int outFd = cgiFds[j];
+            CgiProcess *proc = srv->getCgiProcess(outFd); // CGI状態を取得
+            if (!proc)
                 continue;
 
-            PollEntry entry;
-            entry.fd = fd;
-            entry.events = proc->events;      // ポインタ参照に変更
-            entry.server = srv;
-            entry.clientFd = proc->clientFd;  // ポインタ参照に変更
-            entry.isCgiFd = true;
-            pollEntries.push_back(entry);
+            // --- 出力側（子→親） ---
+            PollEntry outEntry;
+            outEntry.fd = proc->outFd;
+            outEntry.events = POLLIN; // 常に子出力監視
+            outEntry.server = srv;
+            outEntry.clientFd = proc->clientFd;
+            outEntry.isCgiFd = true;
+            pollEntries.push_back(outEntry);
+
+            // --- 入力側（親→子） ---
+            if (proc->inFd >= 0) {
+                PollEntry inEntry;
+                inEntry.fd = proc->inFd;
+                inEntry.events = 0;
+                if (!proc->inputBuffer.empty())
+                    inEntry.events |= POLLOUT; // 書き込み残があればPOLLOUT
+                inEntry.server = srv;
+                inEntry.clientFd = proc->clientFd;
+                inEntry.isCgiFd = true;
+                pollEntries.push_back(inEntry);
+            }
         }
     }
 

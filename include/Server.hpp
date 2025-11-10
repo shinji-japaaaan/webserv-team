@@ -101,12 +101,13 @@ private:
 	void handleCgiClose(int outFd);
 	void handleCgiError(int outFd);
 	void handleCgiInput(int fd);
+	CgiProcess* getCgiProcessByFd(int fd);
+	CgiProcess* getCgiProcessByInFd(int inFd);
 	std::string buildHttpResponseFromCgi(const std::string &cgiOutput);
 	std::string buildHttpErrorPage(int code, const std::string &message);
 	void registerCgiProcess(int clientFd, pid_t pid,
 								int inFd, int outFd, const std::string &body,
 								std::map<int, CgiProcess> &cgiMap);
-
 	Server::LocationMatch getLocationForUri(const std::string &uri) const;
 	void sendGatewayTimeout(int clientFd);
 
