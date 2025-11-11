@@ -53,16 +53,25 @@ static ssize_t writeForHandleClientSend2(int fd, const void* buf, size_t len) {
 // サーバー初期化（ポート指定）
 Server::Server(const ServerConfig &c)
 	: cfg(c), serverFd(-1), nfds(1), port(c.port), host(c.host), root(c.root),
-	  errorPages(c.errorPages) {}
+	  errorPages(c.errorPages) 
+{
+    // fds 配列を安全な状態に初期化
+    for (int i = 0; i < MAX_CLIENTS; ++i) {
+        fds[i].fd = -1;
+        fds[i].events = 0;
+        fds[i].revents = 0;
+    }
+}
 
-// サーバー破棄（全クライアントFDクローズ）
 Server::~Server()
 {
-	for (int i = 0; i < nfds; i++)
-	{
-		close(fds[i].fd);
-	}
-	clients.clear();
+    for (int i = 0; i < nfds; i++)
+    {
+        if (fds[i].fd >= 0) {   // 0以上のものだけ close
+            close(fds[i].fd);
+        }
+    }
+    clients.clear();
 }
 
 // ----------------------------
