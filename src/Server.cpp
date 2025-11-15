@@ -19,30 +19,30 @@
 
 // #define TEST_MOCK_WRITE  // 通常ビルドではコメントアウト
 
-#ifdef TEST_MOCK_WRITE
-static ssize_t writeForhandleCgiInput(int fd, const void* buf, size_t len) {
-    (void)fd; (void)buf; (void)len;
-    return -1; // モック動作: write が常に0を返す
-}
-#else
-static ssize_t writeForhandleCgiInput(int fd, const void* buf, size_t len) {
-    return write(fd, buf, len); // 本来の write
-}
-#endif
+// #ifdef TEST_MOCK_WRITE
+// static ssize_t writeForhandleCgiInput(int fd, const void* buf, size_t len) {
+//     (void)fd; (void)buf; (void)len;
+//     return -1; // モック動作: write が常に0を返す
+// }
+// #else
+// static ssize_t writeForhandleCgiInput(int fd, const void* buf, size_t len) {
+//     return write(fd, buf, len); // 本来の write
+// }
+// #endif
 
 // #define TEST_MOCK_WRITE2  // 通常ビルドではコメントアウト
 
-#ifdef TEST_MOCK_WRITE2
-static ssize_t writeForHandleClientSend2(int fd, const void* buf, size_t len) {
-    (void)fd; (void)buf; (void)len;
-    return -1; // モック動作: write が常に0を返す
-}
-#else
-static ssize_t writeForHandleClientSend2(int fd, const void* buf, size_t len) {
-    return write(fd, buf, len); // 本来の write
-}
+// #ifdef TEST_MOCK_WRITE2
+// static ssize_t writeForHandleClientSend2(int fd, const void* buf, size_t len) {
+//     (void)fd; (void)buf; (void)len;
+//     return -1; // モック動作: write が常に0を返す
+// }
+// #else
+// static ssize_t writeForHandleClientSend2(int fd, const void* buf, size_t len) {
+//     return write(fd, buf, len); // 本来の write
+// }
 
-#endif
+// #endif
 
 
 
@@ -1018,7 +1018,7 @@ void Server::handleCgiInput(int fd)
 
     const char* data = proc->inputBuffer.c_str();
     ssize_t len = proc->inputBuffer.size();
-    ssize_t written = writeForhandleCgiInput(fd, data, len);
+    ssize_t written = write(fd, data, len);
 
     if (written < 0) {
         // 致命的エラーとして終了
@@ -1239,7 +1239,7 @@ void Server::handleClientSend(int index)
         return; // 送るデータがないなら何もしない
 
     size_t sendSize = std::min(client.sendBuffer.size(), static_cast<size_t>(4096));
-    ssize_t n = writeForHandleClientSend2(fd, client.sendBuffer.data(), sendSize);
+    ssize_t n = write(fd, client.sendBuffer.data(), sendSize);
 
     if (n > 0)
     {

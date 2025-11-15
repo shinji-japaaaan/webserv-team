@@ -1,6 +1,6 @@
 #!/bin/bash
 # 総合テストスクリプト（curl -i -v 使用）
-# 事前条件: ./webserv を起動済み, config.conf を指定している
+# 事前条件: ./webserv を起動済み, config(ishi).conf を指定している
 
 SERVER="http://localhost:8080"
 UPLOAD_FILE="../www/test_upload.txt"
