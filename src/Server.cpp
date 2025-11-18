@@ -417,6 +417,7 @@ std::string buildHttpResponse(int statusCode, const std::string &body,
        << (statusCode == 201 ? "Created"
            : statusCode == 403 ? "Forbidden"
            : statusCode == 500 ? "Internal Server Error"
+		   : statusCode == 415 ? "Unsupported Media Type"
            : "")
        << "\r\n";
 

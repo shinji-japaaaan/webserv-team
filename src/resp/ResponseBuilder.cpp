@@ -38,21 +38,6 @@ static std::string buildAllowHeader(const ServerConfig::Location *loc) {
   return oss.str();
 }
 
-// ====== ローカルヘルパ ======
-
-// static bool isDirFs(const std::string& p){
-//     struct stat st;
-//     if (stat(p.c_str(), &st) != 0) return false;
-//     return S_ISDIR(st.st_mode);
-// }
-
-// 使われていなかったので一旦コメントアウト
-//  static bool isRegFs(const std::string& p){
-//      struct stat st;
-//      if (stat(p.c_str(), &st) != 0) return false;
-//      return S_ISREG(st.st_mode);
-//  }
-
 static std::string joinPath(const std::string &a, const std::string &b) {
   if (a.empty())
     return b;
@@ -81,7 +66,7 @@ static std::string lowerCopy(const std::string &s) {
   return r;
 }
 
-// 簡易 reason phrase (本当は http::Status::reason() があるならそれを使う)
+// 簡易 reason phrase
 static std::string reasonPhrase(int code) {
   switch (code) {
   case 200:
@@ -98,6 +83,8 @@ static std::string reasonPhrase(int code) {
     return "Method Not Allowed";
   case 413:
     return "Payload Too Large";
+  case 415:
+    return "Unsupported Media Type";
   case 500:
     return "Internal Server Error";
   case 501:
