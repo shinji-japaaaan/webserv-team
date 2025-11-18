@@ -30,7 +30,6 @@ private:
 	ServerConfig cfg;					   // サーバー設定
 	int serverFd;						   // listen用ソケット
 	pollfd fds[MAX_CLIENTS];			   // クライアントFD監視配列
-	int nfds;							   // fdsの有効数
 	int port;							   // 待ち受けポート番号
 	std::string host;					   // 追加: 待ち受けホストアドレス
 	std::string root;					   // 追加: ドキュメントルート
@@ -63,14 +62,15 @@ private:
 	// -----------------------------
 	void handleNewConnection();
 	int acceptClient(); // accept + nonblocking設定
-	void handleDisconnect(int fd, int index, int bytes);
+	void handleDisconnect(int fd, int bytes);
 	void handleConnectionClose(int fd);
+	void removeClient(int fd);
 	void handleServerError(int fd);
 
 	// -----------------------------
 	// クライアント受信処理
 	// -----------------------------
-	void handleClient(int index);
+	void handleClient(int fd);
 	std::string extractNextRequest(int clientFd, std::string &recvBuffer,
 									   Request &currentRequest);
 	bool isContentLengthExceeded(const Request &req, const std::string &recvBuffer);
@@ -87,10 +87,8 @@ private:
 	// -----------------------------
 	// クライアント送信処理
 	// -----------------------------
-	void handleClientSend(int index);
+	void handleClientSend(int fd);
 	void queueSend(int fd, const std::string &data);
-
-	int findIndexByFd(int fd);
 
 	// -----------------------------
 	// ここから追加：CGI対応用

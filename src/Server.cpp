@@ -52,26 +52,29 @@
 
 // サーバー初期化（ポート指定）
 Server::Server(const ServerConfig &c)
-	: cfg(c), serverFd(-1), nfds(1), port(c.port), host(c.host), root(c.root),
-	  errorPages(c.errorPages) 
+    : cfg(c),
+      serverFd(-1),
+      port(c.port),
+      host(c.host),
+      root(c.root),
+      errorPages(c.errorPages)
 {
-    // fds 配列を安全な状態に初期化
-    for (int i = 0; i < MAX_CLIENTS; ++i) {
-        fds[i].fd = -1;
-        fds[i].events = 0;
-        fds[i].revents = 0;
-    }
+    // fds[], nfds は完全廃止なので何も必要ない
 }
 
 Server::~Server()
 {
-    for (int i = 0; i < nfds; i++)
+    // 接続中クライアントをすべて close
+    for (std::map<int, ClientInfo>::iterator it = clients.begin();
+         it != clients.end(); ++it)
     {
-        if (fds[i].fd >= 0) {   // 0以上のものだけ close
-            close(fds[i].fd);
-        }
+        if (it->first >= 0)
+            close(it->first);
     }
     clients.clear();
+
+    if (serverFd >= 0)
+        close(serverFd);
 }
 
 // ----------------------------
@@ -203,26 +206,23 @@ bool Server::bindAndListen()
 // 新規接続ハンドラ
 void Server::handleNewConnection()
 {
-	int clientFd = acceptClient();
-	if (clientFd < 0)
-		return; // accept 失敗時は何もしない
+    int clientFd = acceptClient();
+    if (clientFd < 0)
+        return;
 
-	if (nfds >= MAX_CLIENTS)
-	{
-		std::ostringstream oss;
-		oss << "Max clients reached, rejecting fd=" << clientFd;
-		logMessage(WARNING, oss.str());
-		close(clientFd);
-		return;
-	}
+    // MAX_CLIENTS チェックは clients.size() のみ
+    if (clients.size() >= MAX_CLIENTS)
+    {
+        std::ostringstream oss;
+        oss << "Max clients reached, rejecting fd=" << clientFd;
+        logMessage(WARNING, oss.str());
+        close(clientFd);
+        return;
+    }
 
-	fds[nfds].fd = clientFd;
-	fds[nfds].events = POLLIN;
-	nfds++;
+    clients[clientFd] = ClientInfo();
 
-	clients[clientFd] = ClientInfo();
-
-	printf("New client connected: fd=%d\n", clientFd);
+    printf("New client connected: fd=%d\n", clientFd);
 }
 
 // accept + ノンブロッキング設定をまとめた関数
@@ -268,15 +268,14 @@ bool Server::handleRedirect(int fd, const ServerConfig::Location *loc)
 	return true;
 }
 
-void Server::handleClient(int index)
+void Server::handleClient(int fd)
 {
 	char buffer[1024];
-	int fd = fds[index].fd;
 	int bytes = recv(fd, buffer, sizeof(buffer) - 1, 0);
 
 	if (bytes <= 0)
 	{
-		handleDisconnect(fd, index, bytes);
+		handleDisconnect(fd, bytes);
 		return;
 	}
 	else if (bytes > 0)
@@ -1226,14 +1225,12 @@ std::string Server::buildHttpResponseFromCgi(const std::string &cgiOutput)
 // ----------------------------
 
 // クライアント送信バッファのデータ送信
-void Server::handleClientSend(int index)
+void Server::handleClientSend(int fd)
 {
-    int fd = fds[index].fd;
-    std::map<int, ClientInfo>::iterator it = clients.find(fd);
-    if (it == clients.end())
+    if (!clients.count(fd))
         return;
 
-    ClientInfo &client = it->second;
+    ClientInfo &client = clients[fd];
 
     if (client.sendBuffer.empty())
         return; // 送るデータがないなら何もしない
@@ -1284,46 +1281,44 @@ void Server::queueSend(int fd, const std::string &data)
 // クライアント接続クローズ処理
 void Server::handleConnectionClose(int fd)
 {
-    // clients から削除
-    std::map<int, ClientInfo>::iterator it = clients.find(fd);
-    if (it != clients.end())
-    {
-        std::cout << "[INFO] Closing connection fd=" << fd << std::endl;
+    std::cout << "[INFO] Closing connection fd=" << fd << std::endl;
 
-        // ソケットを閉じる
-        close(fd);
-
-        // 送受信バッファもクリア
-        it->second.sendBuffer.clear();
-        it->second.recvBuffer.clear();
-
-        // クライアントマップから削除
-        clients.erase(it);
-    }
+    // 共通処理に任せる
+    removeClient(fd);
     // pollfd 配列の更新は ServerManager が担当
 }
 
 // 接続切断処理（recv エラーや切断時の処理）
-void Server::handleDisconnect(int fd, int index, int bytes)
+void Server::handleDisconnect(int fd, int bytes)
 {
-	// bytes が 0 または負の場合は接続終了とみなす
-	if (bytes <= 0)
-	{
-		std::ostringstream oss;
-		if (bytes == 0)
-		{
-			oss << "Client disconnected: fd=" << fd;
-		}
-		else
-		{
-			oss << "Client read error or disconnected: fd=" << fd;
-		}
-		logMessage(INFO, oss.str());
-		close(fd);					// ソケットを閉じる
-		fds[index] = fds[nfds - 1]; // fds 配列の詰め替え
-		nfds--;
-		clients.erase(fd); // clients から削除
-	}
+    if (bytes <= 0)
+    {
+        std::ostringstream oss;
+        if (bytes == 0)
+            oss << "Client disconnected: fd=" << fd;
+        else
+            oss << "Client read error or disconnected: fd=" << fd;
+
+        logMessage(INFO, oss.str());
+
+        // 共通処理に任せる
+        removeClient(fd);
+    }
+}
+
+// fd を閉じて clients から削除する共通処理
+void Server::removeClient(int fd)
+{
+    if (fd >= 0)
+        close(fd);
+
+    std::map<int, ClientInfo>::iterator it = clients.find(fd);
+    if (it != clients.end())
+    {
+        it->second.sendBuffer.clear();
+        it->second.recvBuffer.clear();
+        clients.erase(it);
+    }
 }
 
 // ----------------------------
@@ -1454,15 +1449,11 @@ void Server::onPollEvent(int fd, short revents)
     // 3. 通常クライアントFD
     // --------------------------
     if (clients.count(fd)) {
-		int idx = findIndexByFd(fd);
-        if (revents & POLLIN){
-            // 🔹 通常クライアント
-			if (revents & POLLIN)
-				handleClient(idx); 			// クライアントからのリクエスト受信
-		}
-        if (revents & POLLOUT){
-            handleClientSend(idx);           // クライアントへのレスポンス送信
-        }
+        // 🔹 通常クライアント
+        if (revents & POLLIN)
+            handleClient(fd); 			// クライアントからのリクエスト受信
+        if (revents & POLLOUT)
+            handleClientSend(fd);           // クライアントへのレスポンス送信
         if (revents & (POLLERR | POLLHUP))
             handleConnectionClose(fd);      // エラーや切断時の後処理
     }
@@ -1496,17 +1487,6 @@ void Server::handleServerError(int fd)
 
     // サーバーを停止する場合はここでclose(fd)するが、
     // Webservでは通常そのまま運用
-}
-
-// fdからindexを見つける補助関数
-int Server::findIndexByFd(int fd)
-{
-	for (int i = 0; i < nfds; ++i)
-	{
-		if (fds[i].fd == fd)
-			return i;
-	}
-	return -1;
 }
 
 CgiProcess* Server::getCgiProcess(int fd) {
