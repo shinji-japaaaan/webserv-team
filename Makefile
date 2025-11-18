@@ -16,7 +16,7 @@ SRC = $(SRC_DIR)/main.cpp \
 
 OBJ = $(SRC:.cpp=.o)
 
-CXX = g++
+CXX = c++
 CXXFLAGS = -Wall -Wextra -Werror -std=c++98 -I$(INC_DIR)
 
 all: $(NAME)
