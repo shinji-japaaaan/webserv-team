@@ -128,12 +128,6 @@ void Server::sendGatewayTimeout(int clientFd) {
 
     ClientInfo &client = it->second;
     client.sendBuffer += response;
-
-    // POLLOUT を有効化して poll で送信可能にする
-    int idx = findIndexByFd(clientFd);
-    if (idx >= 0) {
-        fds[idx].events |= POLLOUT;
-    }
 }
 
 // ----------------------------
