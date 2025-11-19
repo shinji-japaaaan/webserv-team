@@ -40,8 +40,8 @@ bool ServerManager::initAllServers() {
 // 全ServerのFDを1つのpoll配列で管理する
 // ----------------------------
 void ServerManager::runAllServers() {
-    const int pollTimeoutMs = 100;     // pollごとのスライス
-    const int READ_TIMEOUT = 50;  // 100ms × 50 = 5秒タイムアウト
+    const int POLL_SLICE_MS = 100;     // pollごとのスライス
+    const int READ_TIMEOUT_MS = 5000;  // タイムアウト5秒
 
     while (true) {
         std::vector<PollEntry> entries = buildPollEntries();
@@ -53,7 +53,7 @@ void ServerManager::runAllServers() {
             fds[i].revents = 0;
         }
         
-        int ret = poll(&fds[0], fds.size(), pollTimeoutMs);
+        int ret = poll(&fds[0], fds.size(), POLL_SLICE_MS);
         if (ret < 0) {
             perror("poll");
             continue;
@@ -63,12 +63,12 @@ void ServerManager::runAllServers() {
 
         // --- CGI タイムアウト処理 ---
         for (size_t i = 0; i < servers.size(); ++i) {
-            servers[i]->checkCgiTimeouts(pollTimeoutMs);
+            servers[i]->checkCgiTimeouts(POLL_SLICE_MS);
         }
 
         // --- クライアント read タイムアウトチェック ---
         for (size_t i = 0; i < servers.size(); ++i) {
-            servers[i]->checkClientTimeouts(READ_TIMEOUT * 1000); // pollTimeoutMs単位に換算
+            servers[i]->checkClientTimeouts(POLL_SLICE_MS, READ_TIMEOUT_MS); // pollTimeoutMs単位に換算
         }
 
     }

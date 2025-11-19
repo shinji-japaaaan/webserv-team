@@ -141,7 +141,7 @@ public:
 	std::vector<int> getCgiFds() const; // 現在監視中のCGI出力FDリスト
 	void checkCgiTimeouts(int maxLoops);
 	bool hasPendingSend(int fd) const;
-	void checkClientTimeouts(int maxTimeoutMs);
+	void checkClientTimeouts(const int POLL_SLICE_MS, const int READ_TIMEOUT_MS);
 };
 
 #endif

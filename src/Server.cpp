@@ -1498,14 +1498,14 @@ CgiProcess* Server::getCgiProcess(int fd) {
 }
 
 // Server.cpp
-void Server::checkClientTimeouts(int maxTimeoutMs)
+void Server::checkClientTimeouts(const int POLL_SLICE_MS, const int READ_TIMEOUT_MS)
 {
     std::map<int, ClientInfo>::iterator it = clients.begin();
     while (it != clients.end()) {
         ClientInfo &client = it->second;
-        client.timeoutCounter += maxTimeoutMs; // pollスライス単位で加算
+        client.timeoutCounter += POLL_SLICE_MS; // pollスライス単位で加算
 
-        if (client.timeoutCounter >= maxTimeoutMs) {
+        if (client.timeoutCounter >= READ_TIMEOUT_MS) {
             int fd = it->first;
             std::cerr << "[TIMEOUT] Closing client fd=" << fd << std::endl;
             handleConnectionClose(fd); // private メソッドはクラス内ならOK
