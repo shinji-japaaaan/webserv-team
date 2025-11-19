@@ -280,7 +280,7 @@ void Server::handleClient(int fd)
 	}
 	else if (bytes > 0)
 	{
-
+        clients[fd].timeoutCounter = 0;
 		buffer[bytes] = '\0';
 		clients[fd].recvBuffer.append(buffer);
 
@@ -1496,4 +1496,23 @@ CgiProcess* Server::getCgiProcess(int fd) {
         throw std::runtime_error("getCgiProcess: fd not found in cgiMap");
     }
     return &(it->second); // ✅ オブジェクトのアドレスを返す
+}
+
+// Server.cpp
+void Server::checkClientTimeouts(const int POLL_SLICE_MS, const int READ_TIMEOUT_MS)
+{
+    std::map<int, ClientInfo>::iterator it = clients.begin();
+    while (it != clients.end()) {
+        ClientInfo &client = it->second;
+        client.timeoutCounter += POLL_SLICE_MS; // pollスライス単位で加算
+
+        if (client.timeoutCounter >= READ_TIMEOUT_MS) {
+            int fd = it->first;
+            std::cerr << "[TIMEOUT] Closing client fd=" << fd << std::endl;
+            handleConnectionClose(fd); // private メソッドはクラス内ならOK
+            it = clients.begin(); // erase後はイテレータ再取得
+        } else {
+            ++it;
+        }
+    }
 }
