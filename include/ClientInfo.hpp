@@ -10,9 +10,10 @@ struct ClientInfo {
     bool requestComplete;      // リクエスト受信完了フラグ
 	bool shouldClose;  // レスポンス送信後に接続を閉じる必要がある場合に true
 	Request currentRequest;
+    int timeoutCounter;
     size_t receivedBodySize; // 受信したボディのサイズ
 
-    ClientInfo(): recvBuffer(""), sendBuffer(""), requestComplete(false), currentRequest(), receivedBodySize(0) {}
+    ClientInfo(): recvBuffer(""), sendBuffer(""), requestComplete(false), currentRequest(), timeoutCounter(0), receivedBodySize(0) {}
 };
 
 #endif

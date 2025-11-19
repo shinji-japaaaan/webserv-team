@@ -41,6 +41,7 @@ bool ServerManager::initAllServers() {
 // ----------------------------
 void ServerManager::runAllServers() {
     const int pollTimeoutMs = 100;     // pollごとのスライス
+    const int READ_TIMEOUT = 50;  // 100ms × 50 = 5秒タイムアウト
 
     while (true) {
         std::vector<PollEntry> entries = buildPollEntries();
@@ -64,8 +65,15 @@ void ServerManager::runAllServers() {
         for (size_t i = 0; i < servers.size(); ++i) {
             servers[i]->checkCgiTimeouts(pollTimeoutMs);
         }
+
+        // --- クライアント read タイムアウトチェック ---
+        for (size_t i = 0; i < servers.size(); ++i) {
+            servers[i]->checkClientTimeouts(READ_TIMEOUT * 1000); // pollTimeoutMs単位に換算
+        }
+
     }
 }
+
 
 // 送信待ちデータがあるか確認
 bool Server::hasPendingSend(int fd) const {
