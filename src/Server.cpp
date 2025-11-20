@@ -858,24 +858,33 @@ std::pair<std::string, std::string> buildCgiScriptPath(
 }
 
 // env 設定を作る関数
-std::map<std::string, std::string> buildCgiEnv(const Request &req,
-											   const ServerConfig::Location &loc,
-											   const std::map<std::string, ServerConfig::Location> &locations)
+std::map<std::string, std::string> buildCgiEnv(
+    const Request &req,
+    const ServerConfig::Location &loc,
+    const std::map<std::string, ServerConfig::Location> &locations)
 {
-	std::map<std::string, std::string> env;
+    std::map<std::string, std::string> env;
 
-	env["REQUEST_METHOD"] = req.method;
+    env["REQUEST_METHOD"] = req.method;
 
-	std::ostringstream len;
-	len << req.body.size();
-	env["CONTENT_LENGTH"] = len.str();
+    std::ostringstream len;
+    len << req.body.size();
+    env["CONTENT_LENGTH"] = len.str();
 
-	std::pair<std::string, std::string> envPaths = buildCgiScriptPath(req.uri, loc, locations);
-	env["SCRIPT_FILENAME"] = envPaths.first;
-	env["QUERY_STRING"] = envPaths.second;
-	env["REDIRECT_STATUS"] = "200";
+    std::map<std::string, std::string>::const_iterator it = req.headers.find("content-type");
+    if (it != req.headers.end())
+        env["CONTENT_TYPE"] = it->second;
+    else
+        env["CONTENT_TYPE"] = "";
 
-	return env;
+    std::pair<std::string, std::string> envPaths =
+        buildCgiScriptPath(req.uri, loc, locations);
+
+    env["SCRIPT_FILENAME"] = envPaths.first;
+    env["QUERY_STRING"] = envPaths.second;
+    env["REDIRECT_STATUS"] = "200";
+
+    return env;
 }
 
 // 子プロセス側の設定・exec
