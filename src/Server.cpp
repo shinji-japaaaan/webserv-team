@@ -494,7 +494,7 @@ void saveBodyToFile(const std::string &body, const std::string &uploadDir) {
 
 void Server::handleChunkedBody(int fd, Request &req, const ServerConfig::Location *loc)
 {
-	// すでに unchunk された req.body を使って処理
+    // すでに unchunk された req.body を使って処理
 	// 例: ファイル保存や CGI に渡すなど
 	if (loc->upload_path.empty())
 	{
@@ -954,7 +954,7 @@ void Server::registerCgiProcess(int clientFd, pid_t pid,
     proc.inFd = inFd;
     proc.outFd = outFd;
     proc.inputBuffer = body;
-    proc.remainingMs = 5000; // タイムアウト
+    proc.remainingMs = 50000; // タイムアウト
 
     // 3. 管理マップにはoutFdキーで保存
     cgiMap[outFd] = proc;
@@ -977,6 +977,8 @@ void Server::startCgiProcess(int clientFd, const Request &req, const ServerConfi
 	// 親プロセス
 	close(inPipe[0]);
 	close(outPipe[1]);
+    std::cout << "[DEBUG] Passing to CGI, body size: " << req.body.size() << std::endl;
+
 	registerCgiProcess(clientFd, pid, inPipe[1], outPipe[0], req.body, cgiMap);
 }
 

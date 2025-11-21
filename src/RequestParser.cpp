@@ -58,38 +58,46 @@ std::string unchunkBody(const std::string &chunkedBody) {
     std::string unchunked;
     std::istringstream stream(chunkedBody);
 
-     bool firstLine = true;
-
     while (true) {
         std::string line;
-        if (!std::getline(stream, line)) break;
+        if (!std::getline(stream, line))
+            break;
 
         // CR (\r) を削除
         if (!line.empty() && line[line.size() - 1] == '\r')
-            line.erase(line.size() - 1);
+            line.erase(line.size() - 1, 1);
 
-        if (line.empty()) continue;
-
-        // 先頭行が余計なデータの場合は無視
-        if (firstLine) {
-            firstLine = false;
+        if (line.empty())
             continue;
-        }
 
-        // chunk サイズ
-        size_t chunkSize = std::strtoul(line.c_str(), 0, 16); // nullptr -> 0
+        // chunk サイズを16進数で取得
+        unsigned long chunkSize = std::strtoul(line.c_str(), 0, 16);
 
-        if (chunkSize == 0) break; // 最終 chunk
+        if (chunkSize == 0)
+            break; // 最終 chunk
+
+        // サイズが大きすぎる場合は中止
+        if (chunkSize > 50 * 1024 * 1024)
+            return std::string();
 
         // データ部分を読み込む
         std::string data;
         data.resize(chunkSize);
         stream.read(&data[0], chunkSize);
+
+        // 読み込めなかった場合は中止
+        if (static_cast<size_t>(stream.gcount()) != chunkSize)
+            return std::string();
+
         unchunked += data;
 
         // データ後の CRLF を読み飛ばす
-        stream.get(); // \r
-        stream.get(); // \n
+        char cr, lf;
+        if (!stream.get(cr) || !stream.get(lf))
+            return std::string();
+
+        if (cr != '\r' || lf != '\n')
+            return std::string();
     }
 
     return unchunked;
@@ -140,7 +148,7 @@ Request RequestParser::parse(const std::string &buffer) {
 			req.method.clear(); // チャンク終端がない → 不正
 			return req;
 		}
-        req.body = unchunkBody(req.body);
+        req.body = unchunkBody(bodyPart);
         parsedLength = headerEnd + 4 + bodyPart.find("0\r\n\r\n") + 5;
     } else {
         std::map<std::string, std::string>::iterator it = req.headers.find("content-length");
