@@ -1090,7 +1090,7 @@ void Server::handleCgiError(int fd)
     std::ostringstream oss;
     oss << "HTTP/1.1 500 Internal Server Error\r\n";
     oss << "Content-Type: text/html\r\n";
-    oss << "Content-Length: " << body.size() << "\r\n\r\n";
+    oss << "Content-Length: " << body.size() << "\r\n";
 	oss << "Connection: close\r\n\r\n"; // ← 追加
     oss << body;
 
@@ -1140,6 +1140,8 @@ void Server::handleCgiClose(int fd)
         queueSend(clientFd, response);
     }
 
+    int pid = proc.pid; // ← ここでコピーしておく
+
     // --- 4️⃣ パイプを確実に閉じる ---
     if (proc.inFd > 0) {
         close(proc.inFd);
@@ -1156,7 +1158,7 @@ void Server::handleCgiClose(int fd)
     // --- 6️⃣ CGIプロセス削除 ---
     cgiMap.erase(fd);
 
-    std::cout << "[CGI] process pid=" << proc.pid << " cleaned up fd=" << fd << std::endl;
+    std::cout << "[CGI] process pid=" << pid << " cleaned up fd=" << fd << std::endl;
 }
 
 std::string Server::buildHttpResponseFromCgi(const std::string &cgiOutput)
