@@ -1,0 +1,10 @@
+body {
+	background-color: #ffdf7e;
+	/* 一発で目立つ色 */
+	font-family: Arial, sans-serif;
+}
+
+h1 {
+	color: #d14;
+	font-size: 28px;
+}
